@@ -61,13 +61,14 @@ k_tas = Symbol("k_tas", real=True) # true airspeed scale factor
 state = Matrix([w_n, w_e, k_tas])
 
 # process noise
-q_w = Symbol("q_w", real=True) # process noise for wind states (sigma)
+q_w = Symbol("q_w", real=True) # process noise for wind states
 q_k_tas = Symbol("q_k_tas", real=True) # process noise for airspeed scale state
 
-# create process noise matrix for covariance prediction
-# the process noise appears linearly in the state equation so we can
-# compute it directly
-Q = diag(q_w**2, q_w**2, q_k_tas**2)
+# airspeed measurement noise
+r_tas = Symbol("r_tas", real=True)
+
+# sideslip measurement noise
+r_beta = Symbol("r_beta", real=True)
 
 #################### time varying parameters ##################################
 
@@ -83,18 +84,29 @@ qy = Symbol("qy", real=True)
 qz = Symbol("qz", real=True)
 q_att = Matrix([qw, qx, qy, qz])
 
+# sampling time in seconds
+dt = Symbol("dt", real=True)
+
 ######################## State and covariance prediction ######################
 
 # state transition matrix is zero because we are using a stationary
 # process model. We only need to provide formula for covariance prediction
 
+# create process noise matrix for covariance prediction
+# the process noise appears linearly in the state equation so we can
+# compute it directly
+state_new = state + Matrix([q_w, q_w, q_k_tas]) * dt
+Q = diag(q_w, q_k_tas)
+L = state_new.jacobian([q_w, q_k_tas])
+Q = L * Q * Transpose(L)
+
 # define symbolic covariance matrix
-p00 = Symbol('PT[0][0]', real=True)
-p01 = Symbol('PT[0][1]', real=True)
-p02 = Symbol('PT[0][2]', real=True)
-p12 = Symbol('PT[1][2]', real=True)
-p11 = Symbol('PT[1][1]', real=True)
-p22 = Symbol('PT[2][2]', real=True)
+p00 = Symbol('_P[0][0]', real=True)
+p01 = Symbol('_P[0][1]', real=True)
+p02 = Symbol('_P[0][2]', real=True)
+p12 = Symbol('_P[1][2]', real=True)
+p11 = Symbol('_P[1][1]', real=True)
+p22 = Symbol('_P[2][2]', real=True)
 P = Matrix([[p00, p01, p02], [p01, p11, p12], [p02, p12, p22]])
 
 # covariance prediction equation
@@ -115,7 +127,16 @@ tas_pred = Matrix([((v_n - w_n)**2 + (v_e - w_e)**2 + v_d**2)**0.5]) * k_tas
 H_tas = tas_pred.jacobian(state)
 # simplify the result and write it to a text file in C format
 H_tas_simple = cse(H_tas, symbols('HH0:30'))
-write_simplified(H_simple, "airspeed_fusion.txt", 'H_tas')
+write_simplified(H_tas_simple, "airspeed_fusion.txt", 'H_tas')
+K = P * Transpose(H_tas) * (H_tas * P * Transpose(H_tas) + Matrix([r_tas])).inv()
+
+K_simple = cse(K, symbols('KTAS0:30'))
+write_simplified(K_simple, "airspeed_fusion.txt", "K")
+
+P_m = P - K*H_tas*P
+P_m_simple = cse(P_m, symbols('PM0:50'))
+write_simplified(P_m_simple, "airspeed_fusion.txt", "_P")
+ 
 
 # sideslip fusion
 
@@ -130,4 +151,15 @@ H_beta = Matrix([beta_pred]).jacobian(state)
 # simplify the result and write it to a text file in C format
 H_beta_simple = cse(H_beta, symbols('HB0:30'))
 write_simplified(H_beta_simple, "beta_fusion.txt", 'H_beta')
+K = P * Transpose(H_beta)
+denom = H_beta * P * Transpose(H_beta) + Matrix([r_beta])
+denom = 1/denom.values()[0]
+K = K*denom
+K_simple = cse(K, symbols('KB0:30'))
+write_simplified(K_simple, "beta_fusion.txt", 'K')
+
+P_m = P - K*H_beta*P
+P_m_simple = cse(P_m, symbols('PM0:50'))
+write_simplified(P_m_simple, "beta_fusion.txt", "_P")
+
 
