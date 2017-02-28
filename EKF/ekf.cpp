@@ -86,6 +86,8 @@ Ekf::Ekf():
 	_last_disarmed_posD(0.0f),
 	_imu_collection_time_adj(0.0f),
 	_time_acc_bias_check(0.0f),
+	_last_dt_overrun(0.0f),
+	_delta_time_baro_us(0),
 	_airspeed_innov(0.0f),
 	_airspeed_innov_var(0.0f),
 	_beta_innov(0.0f),
