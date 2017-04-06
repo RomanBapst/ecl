@@ -250,6 +250,7 @@ struct parameters {
 	float max_hagl_for_range_aid;	// maximum height above ground for which we allow to use the range finder as height source (if range_aid == 1)
 	float max_vel_for_range_aid;	// maximum ground velocity for which we allow to use the range finder as height source (if range_aid == 1)
 	int range_aid;			// allow switching primary height source to range finder if certian conditions are met
+    float range_aid_innov_gate; // gate size used for innovation consistency checks for range aid fusion
 
 	// vision position fusion
 	float ev_innov_gate;		// vision estimator fusion innovation consistency gate size (STD)
@@ -370,7 +371,8 @@ struct parameters {
 		range_noise_scaler = 0.0f;
 		max_hagl_for_range_aid = 5.0f;
 		max_vel_for_range_aid = 1.0f;
-		range_aid = 0;
+        range_aid = 1;
+        range_aid_innov_gate = 1.0f;
 
 		// vision position fusion
 		ev_innov_gate = 5.0f;
