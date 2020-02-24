@@ -1,6 +1,6 @@
 ############################################################################
 #
-#   Copyright (c) 2015 ECL Development Team. All rights reserved.
+#   Copyright (c) 2015-2018 ECL Development Team. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -31,48 +31,33 @@
 #
 ############################################################################
 
-cmake_minimum_required(VERSION 2.8)
-
-project (ECL CXX)
-set(CMAKE_BUILD_TYPE Release)
-set(CMAKE_CXX_FLAGS "-DPOSIX_SHARED")
-
-set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR})
-message("looking for FindEigen3.cmake in ${CMAKE_MODULE_PATH}")
-find_package(Eigen3 REQUIRED)
-
-if( NOT EIGEN3_INCLUDE_DIR )
-	message( FATAL_ERROR "Eigen3 not found.")
-endif()
-
-if( NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../matrix/.git" )
-message( SEND_ERROR "The git submodules are not available. Please run
-git submodule update --init --recursive"
-)
-endif()
-
-include_directories(
-	./
-	../
-	../matrix
-	${EIGEN3_INCLUDE_DIR}
-)
-set(SRCS
-	estimator_interface.cpp
-	ekf.cpp
-	ekf_helper.cpp
-	covariance.cpp
-	vel_pos_fusion.cpp
-	mag_fusion.cpp
-	gps_checks.cpp
+add_library(ecl_EKF
 	airspeed_fusion.cpp
 	control.cpp
-	geo.cpp
-	mathlib.cpp
+	covariance.cpp
+	drag_fusion.cpp
+	ekf.cpp
+	ekf_helper.cpp
+	estimator_interface.cpp
+	gps_checks.cpp
+	mag_fusion.cpp
+	optflow_fusion.cpp
+	sideslip_fusion.cpp
+	terrain_estimator.cpp
+	vel_pos_fusion.cpp
 )
-add_definitions(-std=c++11 -Wall -Werror)
 
-# Eigen throws various warnings
-add_definitions(-Wno-deprecated-declarations -Wno-enum-compare -Wno-unused-local-typedefs)
+add_dependencies(ecl_EKF prebuild_targets)
+target_compile_definitions(ecl_EKF PRIVATE -DMODULE_NAME="ecl/EKF")
+target_include_directories(ecl_EKF PUBLIC ${ECL_SOURCE_DIR})
+target_link_libraries(ecl_EKF PRIVATE ecl_geo ecl_geo_lookup mathlib)
 
-add_library(ecl SHARED ${SRCS})
+set_target_properties(ecl_EKF PROPERTIES PUBLIC_HEADER "ekf.h")
+
+if(EKF_PYTHON_TESTS)
+	add_subdirectory(swig)
+endif()
+
+if(BUILD_TESTING)
+	add_subdirectory(tests)
+endif()

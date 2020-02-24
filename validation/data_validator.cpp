@@ -40,32 +40,8 @@
  */
 
 #include "data_validator.h"
-#include <ecl/ecl.h>
 
-DataValidator::DataValidator(DataValidator *prev_sibling) :
-	_error_mask(ERROR_FLAG_NO_ERROR),
-	_time_last(0),
-	_timeout_interval(20000),
-	_event_count(0),
-	_error_count(0),
-	_error_density(0),
-	_priority(0),
-	_mean{0.0f},
-	_lp{0.0f},
-	_M2{0.0f},
-	_rms{0.0f},
-	_value{0.0f},
-	_vibe{0.0f},
-	_value_equal_count(0),
-	_sibling(prev_sibling)
-{
-
-}
-
-DataValidator::~DataValidator()
-{
-
-}
+#include <ecl.h>
 
 void
 DataValidator::put(uint64_t timestamp, float val, uint64_t error_count_in, int priority_in)
@@ -76,12 +52,13 @@ DataValidator::put(uint64_t timestamp, float val, uint64_t error_count_in, int p
 }
 
 void
-DataValidator::put(uint64_t timestamp, float val[dimensions], uint64_t error_count_in, int priority_in)
+DataValidator::put(uint64_t timestamp, const float val[dimensions], uint64_t error_count_in, int priority_in)
 {
 	_event_count++;
 
 	if (error_count_in > _error_count) {
 		_error_density += (error_count_in - _error_count);
+
 	} else if (_error_density > 0) {
 		_error_density--;
 	}
@@ -94,6 +71,7 @@ DataValidator::put(uint64_t timestamp, float val[dimensions], uint64_t error_cou
 			_mean[i] = 0;
 			_lp[i] = val[i];
 			_M2[i] = 0;
+
 		} else {
 			float lp_val = val[i] - _lp[i];
 
@@ -104,6 +82,7 @@ DataValidator::put(uint64_t timestamp, float val[dimensions], uint64_t error_cou
 
 			if (fabsf(_value[i] - val[i]) < 0.000001f) {
 				_value_equal_count++;
+
 			} else {
 				_value_equal_count = 0;
 			}
@@ -124,43 +103,44 @@ float
 DataValidator::confidence(uint64_t timestamp)
 {
 	float ret = 1.0f;
-	
+
 	/* check if we have any data */
 	if (_time_last == 0) {
 		_error_mask |= ERROR_FLAG_NO_DATA;
 		ret = 0.0f;
 
-	/* timed out - that's it */
 	} else if (timestamp - _time_last > _timeout_interval) {
+		/* timed out - that's it */
 		_error_mask |= ERROR_FLAG_TIMEOUT;
 		ret = 0.0f;
 
-	/* we got the exact same sensor value N times in a row */
-	} else if (_value_equal_count > VALUE_EQUAL_COUNT_MAX) {
+	} else if (_value_equal_count > _value_equal_count_threshold) {
+		/* we got the exact same sensor value N times in a row */
 		_error_mask |= ERROR_FLAG_STALE_DATA;
 		ret = 0.0f;
 
-	/* check error count limit */
 	} else if (_error_count > NORETURN_ERRCOUNT) {
+		/* check error count limit */
 		_error_mask |= ERROR_FLAG_HIGH_ERRCOUNT;
 		ret = 0.0f;
 
-	/* cap error density counter at window size */
 	} else if (_error_density > ERROR_DENSITY_WINDOW) {
+		/* cap error density counter at window size */
 		_error_mask |= ERROR_FLAG_HIGH_ERRDENSITY;
 		_error_density = ERROR_DENSITY_WINDOW;
 
-	/* no error */
-	} else {
-		_error_mask = ERROR_FLAG_NO_ERROR;
 	}
-	
+
 	/* no critical errors */
 	if (ret > 0.0f) {
 		/* return local error density for last N measurements */
 		ret = 1.0f - (_error_density / ERROR_DENSITY_WINDOW);
+
+		if (ret > 0.0f) {
+			_error_mask = ERROR_FLAG_NO_ERROR;
+		}
 	}
-	
+
 	return ret;
 }
 
@@ -174,7 +154,7 @@ DataValidator::print()
 
 	for (unsigned i = 0; i < dimensions; i++) {
 		ECL_INFO("\tval: %8.4f, lp: %8.4f mean dev: %8.4f RMS: %8.4f conf: %8.4f",
-			(double) _value[i], (double)_lp[i], (double)_mean[i],
-			(double)_rms[i], (double)confidence(hrt_absolute_time()));
+			 (double) _value[i], (double)_lp[i], (double)_mean[i],
+			 (double)_rms[i], (double)confidence(ecl_absolute_time()));
 	}
 }

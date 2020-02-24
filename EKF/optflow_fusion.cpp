@@ -41,7 +41,9 @@
  */
 
 #include "ekf.h"
-#include "mathlib.h"
+#include <ecl.h>
+#include <mathlib/mathlib.h>
+#include <cfloat>
 
 void Ekf::fuseOptFlow()
 {
@@ -65,24 +67,34 @@ void Ekf::fuseOptFlow()
 	float H_LOS[2][24] = {}; // Optical flow observation Jacobians
 	float Kfusion[24][2] = {}; // Optical flow Kalman gains
 
-	// constrain height above ground to be above minimum height when sitting on ground
-	float heightAboveGndEst = math::max((_terrain_vpos - _state.pos(2)), gndclearance);
-
 	// get rotation nmatrix from earth to body
-	matrix::Dcm<float> earth_to_body(_state.quat_nominal);
+	Dcmf earth_to_body(_state.quat_nominal);
 	earth_to_body = earth_to_body.transpose();
 
 	// calculate the sensor position relative to the IMU
 	Vector3f pos_offset_body = _params.flow_pos_body - _params.imu_pos_body;
 
 	// calculate the velocity of the sensor reelative to the imu in body frame
-	Vector3f vel_rel_imu_body = cross_product(_flow_sample_delayed.gyroXYZ , pos_offset_body);
+	Vector3f vel_rel_imu_body = cross_product(_flow_sample_delayed.gyroXYZ / _flow_sample_delayed.dt, pos_offset_body);
 
 	// calculate the velocity of the sensor in the earth frame
 	Vector3f vel_rel_earth = _state.vel + _R_to_earth * vel_rel_imu_body;
 
 	// rotate into body frame
 	Vector3f vel_body = earth_to_body * vel_rel_earth;
+
+	// height above ground of the IMU
+	float heightAboveGndEst = _terrain_vpos - _state.pos(2);
+
+	// calculate the sensor position relative to the IMU in earth frame
+	Vector3f pos_offset_earth = _R_to_earth * pos_offset_body;
+
+	// calculate the height above the ground of the optical flow camera. Since earth frame is NED
+	// a positve offset in earth frame leads to a a smaller height above the ground.
+	heightAboveGndEst -= pos_offset_earth(2);
+
+	// constrain minimum height above ground
+	heightAboveGndEst = math::max(heightAboveGndEst, gndclearance);
 
 	// calculate range from focal point to centre of image
 	float range = heightAboveGndEst / earth_to_body(2, 2); // absolute distance to the frame region in view
@@ -91,10 +103,10 @@ void Ekf::fuseOptFlow()
 	// correct for gyro bias errors in the data used to do the motion compensation
 	// Note the sign convention used: A positive LOS rate is a RH rotaton of the scene about that axis.
 	Vector2f opt_flow_rate;
-	opt_flow_rate(0) = _flow_sample_delayed.flowRadXYcomp(0) / _flow_sample_delayed.dt + _flow_gyro_bias(0);
-	opt_flow_rate(1) = _flow_sample_delayed.flowRadXYcomp(1) / _flow_sample_delayed.dt + _flow_gyro_bias(1);
+	opt_flow_rate(0) = _flowRadXYcomp(0) / _flow_sample_delayed.dt + _flow_gyro_bias(0);
+	opt_flow_rate(1) = _flowRadXYcomp(1) / _flow_sample_delayed.dt + _flow_gyro_bias(1);
 
-	if (opt_flow_rate.norm() < _params.flow_rate_max) {
+	if (opt_flow_rate.norm() < _flow_max_rate) {
 		_flow_innov[0] =  vel_body(1) / range - opt_flow_rate(0); // flow around the X axis
 		_flow_innov[1] = -vel_body(0) / range - opt_flow_rate(1); // flow around the Y axis
 
@@ -212,6 +224,7 @@ void Ekf::fuseOptFlow()
 			float t92 = t2*t7*t69;
 			float t77 = R_LOS+t37+t43+t50+t63+t76-t87-t92;
 			float t78;
+
 			// calculate innovation variance for X axis observation and protect against a badly conditioned calculation
 			if (t77 >= R_LOS) {
 				t78 = 1.0f / t77;
@@ -397,20 +410,19 @@ void Ekf::fuseOptFlow()
 			// run innovation consistency check
 			optflow_test_ratio[1] = sq(_flow_innov[1]) / (sq(math::max(_params.flow_innov_gate, 1.0f)) * _flow_innov_var[1]);
 
-		} else {
-			return;
 		}
 	}
 
 	// record the innovation test pass/fail
 	bool flow_fail = false;
+
 	for (uint8_t obs_index = 0; obs_index <= 1; obs_index++) {
 		if (optflow_test_ratio[obs_index] > 1.0f) {
 			flow_fail = true;
-			_innov_check_fail_status.value |= (1 << (obs_index + 9));
+			_innov_check_fail_status.value |= (1 << (obs_index + 10));
 
 		} else {
-			_innov_check_fail_status.value &= ~(1 << (obs_index + 9));
+			_innov_check_fail_status.value &= ~(1 << (obs_index + 10));
 
 		}
 	}
@@ -433,21 +445,27 @@ void Ekf::fuseOptFlow()
 		// apply covariance correction via P_new = (I -K*H)*P
 		// first calculate expression for KHP
 		// then calculate P - KHP
-		for (unsigned row = 0; row < _k_num_states; row++) {
-			for (unsigned column = 0; column <= 6; column++) {
-				KH[row][column] = gain[row] * H_LOS[obs_index][column];
-			}
-		}
+		float KHP[_k_num_states][_k_num_states];
+		float KH[7];
 
 		for (unsigned row = 0; row < _k_num_states; row++) {
+
+			KH[0] = gain[row] * H_LOS[obs_index][0];
+			KH[1] = gain[row] * H_LOS[obs_index][1];
+			KH[2] = gain[row] * H_LOS[obs_index][2];
+			KH[3] = gain[row] * H_LOS[obs_index][3];
+			KH[4] = gain[row] * H_LOS[obs_index][4];
+			KH[5] = gain[row] * H_LOS[obs_index][5];
+			KH[6] = gain[row] * H_LOS[obs_index][6];
+
 			for (unsigned column = 0; column < _k_num_states; column++) {
-				float tmp = KH[row][0] * P[0][column];
-				tmp += KH[row][1] * P[1][column];
-				tmp += KH[row][2] * P[2][column];
-				tmp += KH[row][3] * P[3][column];
-				tmp += KH[row][4] * P[4][column];
-				tmp += KH[row][5] * P[5][column];
-				tmp += KH[row][6] * P[6][column];
+				float tmp = KH[0] * P[0][column];
+				tmp += KH[1] * P[1][column];
+				tmp += KH[2] * P[2][column];
+				tmp += KH[3] * P[3][column];
+				tmp += KH[4] * P[4][column];
+				tmp += KH[5] * P[5][column];
+				tmp += KH[6] * P[6][column];
 				KHP[row][column] = tmp;
 			}
 		}
@@ -457,11 +475,12 @@ void Ekf::fuseOptFlow()
 		bool healthy = true;
 		_fault_status.flags.bad_optflow_X = false;
 		_fault_status.flags.bad_optflow_Y = false;
+
 		for (int i = 0; i < _k_num_states; i++) {
 			if (P[i][i] < KHP[i][i]) {
 				// zero rows and columns
-				zeroRows(P,i,i);
-				zeroCols(P,i,i);
+				zeroRows(P, i, i);
+				zeroCols(P, i, i);
 
 				//flag as unhealthy
 				healthy = false;
@@ -469,6 +488,7 @@ void Ekf::fuseOptFlow()
 				// update individual measurement health status
 				if (obs_index == 0) {
 					_fault_status.flags.bad_optflow_X = true;
+
 				} else if (obs_index == 1) {
 					_fault_status.flags.bad_optflow_Y = true;
 				}
@@ -491,7 +511,6 @@ void Ekf::fuseOptFlow()
 			fuse(gain, _flow_innov[obs_index]);
 
 			_time_last_of_fuse = _time_last_imu;
-			_gps_check_fail_status.value = 0;
 		}
 	}
 }
@@ -507,43 +526,63 @@ void Ekf::get_flow_innov_var(float flow_innov_var[2])
 	memcpy(flow_innov_var, _flow_innov_var, sizeof(_flow_innov_var));
 }
 
-// calculate optical flow gyro bias errors
-void Ekf::calcOptFlowBias()
+void Ekf::get_drag_innov(float drag_innov[2])
 {
-	// accumulate the bias corrected delta angles from the navigation sensor and lapsed time
-	_imu_del_ang_of += _imu_sample_delayed.delta_ang;
-	_delta_time_of += _imu_sample_delayed.delta_ang_dt;
+	memcpy(drag_innov, _drag_innov, sizeof(_drag_innov));
+}
 
+
+void Ekf::get_drag_innov_var(float drag_innov_var[2])
+{
+	memcpy(drag_innov_var, _drag_innov_var, sizeof(_drag_innov_var));
+}
+
+// calculate optical flow body angular rate compensation
+// returns false if bias corrected body rate data is unavailable
+bool Ekf::calcOptFlowBodyRateComp()
+{
 	// reset the accumulators if the time interval is too large
 	if (_delta_time_of > 1.0f) {
 		_imu_del_ang_of.setZero();
 		_delta_time_of = 0.0f;
+		return false;
 	}
 
-	// if accumulation time differences are not excessive and accumulation time is adequate
-	// compare the optical flow and and navigation rate data and calculate a bias error
-	if ((fabsf(_delta_time_of - _flow_sample_delayed.dt) < 0.05f) && (_delta_time_of > 0.01f)
-	    && (_flow_sample_delayed.dt > 0.01f)) {
-		// calculate a reference angular rate
-		Vector3f reference_body_rate;
-		reference_body_rate = _imu_del_ang_of * (1.0f / _delta_time_of);
+	bool use_flow_sensor_gyro =  ISFINITE(_flow_sample_delayed.gyroXYZ(0)) && ISFINITE(_flow_sample_delayed.gyroXYZ(1)) && ISFINITE(_flow_sample_delayed.gyroXYZ(2));
 
-		// calculate the optical flow sensor measured body rate
-		Vector3f of_body_rate;
-		of_body_rate = _flow_sample_delayed.gyroXYZ * (1.0f / _flow_sample_delayed.dt);
+	if (use_flow_sensor_gyro) {
 
-		// calculate the bias estimate using  a combined LPF and spike filter
-		_flow_gyro_bias(0) = 0.99f * _flow_gyro_bias(0) + 0.01f * math::constrain((of_body_rate(0) - reference_body_rate(0)),
-				     -0.1f, 0.1f);
-		_flow_gyro_bias(1) = 0.99f * _flow_gyro_bias(1) + 0.01f * math::constrain((of_body_rate(1) - reference_body_rate(1)),
-				     -0.1f, 0.1f);
-		_flow_gyro_bias(2) = 0.99f * _flow_gyro_bias(2) + 0.01f * math::constrain((of_body_rate(2) - reference_body_rate(2)),
-				     -0.1f, 0.1f);
+		// if accumulation time differences are not excessive and accumulation time is adequate
+		// compare the optical flow and and navigation rate data and calculate a bias error
+		if ((fabsf(_delta_time_of - _flow_sample_delayed.dt) < 0.1f) && (_delta_time_of > FLT_EPSILON)) {
+			// calculate a reference angular rate
+			Vector3f reference_body_rate;
+			reference_body_rate = _imu_del_ang_of * (1.0f / _delta_time_of);
+
+			// calculate the optical flow sensor measured body rate
+			Vector3f of_body_rate;
+			of_body_rate = _flow_sample_delayed.gyroXYZ * (1.0f / _flow_sample_delayed.dt);
+
+			// calculate the bias estimate using  a combined LPF and spike filter
+			_flow_gyro_bias(0) = 0.99f * _flow_gyro_bias(0) + 0.01f * math::constrain((of_body_rate(0) - reference_body_rate(0)),
+					     -0.1f, 0.1f);
+			_flow_gyro_bias(1) = 0.99f * _flow_gyro_bias(1) + 0.01f * math::constrain((of_body_rate(1) - reference_body_rate(1)),
+					     -0.1f, 0.1f);
+			_flow_gyro_bias(2) = 0.99f * _flow_gyro_bias(2) + 0.01f * math::constrain((of_body_rate(2) - reference_body_rate(2)),
+					     -0.1f, 0.1f);
+		}
+
+	} else {
+		// Use the EKF gyro data if optical flow sensor gyro data is not available
+		// for clarification of the sign see definition of flowSample and imuSample in common.h
+		_flow_sample_delayed.gyroXYZ = - _imu_del_ang_of;
+		_flow_gyro_bias.zero();
 	}
 
 	// reset the accumulators
 	_imu_del_ang_of.setZero();
 	_delta_time_of = 0.0f;
+	return true;
 }
 
 // calculate the measurement variance for the optical flow sensor (rad/sec)^2

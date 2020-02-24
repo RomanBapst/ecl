@@ -49,20 +49,19 @@
 #ifndef ECL_PITCH_CONTROLLER_H
 #define ECL_PITCH_CONTROLLER_H
 
-#include <stdbool.h>
-#include <stdint.h>
+#include <mathlib/mathlib.h>
 
 #include "ecl_controller.h"
 
-class __EXPORT ECL_PitchController :
+class ECL_PitchController :
 	public ECL_Controller
 {
 public:
 	ECL_PitchController();
-
-	~ECL_PitchController();
+	~ECL_PitchController() = default;
 
 	float control_attitude(const struct ECL_ControlData &ctl_data);
+	float control_euler_rate(const struct ECL_ControlData &ctl_data);
 	float control_bodyrate(const struct ECL_ControlData &ctl_data);
 
 	/* Additional Setters */
@@ -74,6 +73,11 @@ public:
 	void set_max_rate_neg(float max_rate_neg)
 	{
 		_max_rate_neg = max_rate_neg;
+	}
+
+	void set_bodyrate_setpoint(float rate)
+	{
+		_bodyrate_setpoint = math::constrain(rate, -_max_rate_neg, _max_rate);
 	}
 
 	void set_roll_ff(float roll_ff)

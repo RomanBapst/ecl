@@ -39,9 +39,10 @@
  * @author Paul Riseborough <p_riseborough@live.com.au>
  *
  */
-#include "../ecl.h"
+
 #include "ekf.h"
-#include "mathlib.h"
+#include <ecl.h>
+#include <mathlib/mathlib.h>
 
 void Ekf::fuseMag()
 {
@@ -72,7 +73,7 @@ void Ekf::fuseMag()
 	SH_MAG[8] = 2.0f*magE*q3;
 
 	// rotate magnetometer earth field state into body frame
-	matrix::Dcm<float> R_to_body(_state.quat_nominal);
+	Dcmf R_to_body(_state.quat_nominal);
 	R_to_body = R_to_body.transpose();
 
 	Vector3f mag_I_rot = R_to_body * _state.mag_I;
@@ -145,13 +146,16 @@ void Ekf::fuseMag()
 
 	// Perform an innovation consistency check and report the result
 	bool healthy = true;
+
 	for (uint8_t index = 0; index <= 2; index++) {
 		_mag_test_ratio[index] = sq(_mag_innov[index]) / (sq(math::max(_params.mag_innov_gate, 1.0f)) * _mag_innov_var[index]);
+
 		if (_mag_test_ratio[index] > 1.0f) {
 			healthy = false;
 			_innov_check_fail_status.value |= (1 << (index + 3));
+
 		} else {
-			_innov_check_fail_status.value &= !(1 << (index + 3));
+			_innov_check_fail_status.value &= ~(1 << (index + 3));
 		}
 	}
 
@@ -162,6 +166,8 @@ void Ekf::fuseMag()
 	if (!healthy) {
 		return;
 	}
+
+	bool update_all_states = !_control_status.flags.update_mag_states_only && !_flt_mag_align_converging;
 
 	// update the states and covariance using sequential fusion of the magnetometer components
 	for (uint8_t index = 0; index <= 2; index++) {
@@ -187,30 +193,40 @@ void Ekf::fuseMag()
 			SK_MX[3] = 2.0f*q0*q2 - 2.0f*q1*q3;
 			SK_MX[4] = 2.0f*q0*q3 + 2.0f*q1*q2;
 
-			Kfusion[0] = SK_MX[0]*(P[0][19] + P[0][1]*SH_MAG[0] - P[0][2]*SH_MAG[1] + P[0][3]*SH_MAG[2] + P[0][0]*SK_MX[2] - P[0][16]*SK_MX[1] + P[0][17]*SK_MX[4] - P[0][18]*SK_MX[3]);
-			Kfusion[1] = SK_MX[0]*(P[1][19] + P[1][1]*SH_MAG[0] - P[1][2]*SH_MAG[1] + P[1][3]*SH_MAG[2] + P[1][0]*SK_MX[2] - P[1][16]*SK_MX[1] + P[1][17]*SK_MX[4] - P[1][18]*SK_MX[3]);
-			Kfusion[2] = SK_MX[0]*(P[2][19] + P[2][1]*SH_MAG[0] - P[2][2]*SH_MAG[1] + P[2][3]*SH_MAG[2] + P[2][0]*SK_MX[2] - P[2][16]*SK_MX[1] + P[2][17]*SK_MX[4] - P[2][18]*SK_MX[3]);
-			Kfusion[3] = SK_MX[0]*(P[3][19] + P[3][1]*SH_MAG[0] - P[3][2]*SH_MAG[1] + P[3][3]*SH_MAG[2] + P[3][0]*SK_MX[2] - P[3][16]*SK_MX[1] + P[3][17]*SK_MX[4] - P[3][18]*SK_MX[3]);
-			Kfusion[4] = SK_MX[0]*(P[4][19] + P[4][1]*SH_MAG[0] - P[4][2]*SH_MAG[1] + P[4][3]*SH_MAG[2] + P[4][0]*SK_MX[2] - P[4][16]*SK_MX[1] + P[4][17]*SK_MX[4] - P[4][18]*SK_MX[3]);
-			Kfusion[5] = SK_MX[0]*(P[5][19] + P[5][1]*SH_MAG[0] - P[5][2]*SH_MAG[1] + P[5][3]*SH_MAG[2] + P[5][0]*SK_MX[2] - P[5][16]*SK_MX[1] + P[5][17]*SK_MX[4] - P[5][18]*SK_MX[3]);
-			Kfusion[6] = SK_MX[0]*(P[6][19] + P[6][1]*SH_MAG[0] - P[6][2]*SH_MAG[1] + P[6][3]*SH_MAG[2] + P[6][0]*SK_MX[2] - P[6][16]*SK_MX[1] + P[6][17]*SK_MX[4] - P[6][18]*SK_MX[3]);
-			Kfusion[7] = SK_MX[0]*(P[7][19] + P[7][1]*SH_MAG[0] - P[7][2]*SH_MAG[1] + P[7][3]*SH_MAG[2] + P[7][0]*SK_MX[2] - P[7][16]*SK_MX[1] + P[7][17]*SK_MX[4] - P[7][18]*SK_MX[3]);
-			Kfusion[8] = SK_MX[0]*(P[8][19] + P[8][1]*SH_MAG[0] - P[8][2]*SH_MAG[1] + P[8][3]*SH_MAG[2] + P[8][0]*SK_MX[2] - P[8][16]*SK_MX[1] + P[8][17]*SK_MX[4] - P[8][18]*SK_MX[3]);
-			Kfusion[9] = SK_MX[0]*(P[9][19] + P[9][1]*SH_MAG[0] - P[9][2]*SH_MAG[1] + P[9][3]*SH_MAG[2] + P[9][0]*SK_MX[2] - P[9][16]*SK_MX[1] + P[9][17]*SK_MX[4] - P[9][18]*SK_MX[3]);
-			Kfusion[10] = SK_MX[0]*(P[10][19] + P[10][1]*SH_MAG[0] - P[10][2]*SH_MAG[1] + P[10][3]*SH_MAG[2] + P[10][0]*SK_MX[2] - P[10][16]*SK_MX[1] + P[10][17]*SK_MX[4] - P[10][18]*SK_MX[3]);
-			Kfusion[11] = SK_MX[0]*(P[11][19] + P[11][1]*SH_MAG[0] - P[11][2]*SH_MAG[1] + P[11][3]*SH_MAG[2] + P[11][0]*SK_MX[2] - P[11][16]*SK_MX[1] + P[11][17]*SK_MX[4] - P[11][18]*SK_MX[3]);
-			Kfusion[12] = SK_MX[0]*(P[12][19] + P[12][1]*SH_MAG[0] - P[12][2]*SH_MAG[1] + P[12][3]*SH_MAG[2] + P[12][0]*SK_MX[2] - P[12][16]*SK_MX[1] + P[12][17]*SK_MX[4] - P[12][18]*SK_MX[3]);
-			Kfusion[13] = SK_MX[0]*(P[13][19] + P[13][1]*SH_MAG[0] - P[13][2]*SH_MAG[1] + P[13][3]*SH_MAG[2] + P[13][0]*SK_MX[2] - P[13][16]*SK_MX[1] + P[13][17]*SK_MX[4] - P[13][18]*SK_MX[3]);
-			Kfusion[14] = SK_MX[0]*(P[14][19] + P[14][1]*SH_MAG[0] - P[14][2]*SH_MAG[1] + P[14][3]*SH_MAG[2] + P[14][0]*SK_MX[2] - P[14][16]*SK_MX[1] + P[14][17]*SK_MX[4] - P[14][18]*SK_MX[3]);
-			Kfusion[15] = SK_MX[0]*(P[15][19] + P[15][1]*SH_MAG[0] - P[15][2]*SH_MAG[1] + P[15][3]*SH_MAG[2] + P[15][0]*SK_MX[2] - P[15][16]*SK_MX[1] + P[15][17]*SK_MX[4] - P[15][18]*SK_MX[3]);
+			if (update_all_states) {
+				Kfusion[0] = SK_MX[0]*(P[0][19] + P[0][1]*SH_MAG[0] - P[0][2]*SH_MAG[1] + P[0][3]*SH_MAG[2] + P[0][0]*SK_MX[2] - P[0][16]*SK_MX[1] + P[0][17]*SK_MX[4] - P[0][18]*SK_MX[3]);
+				Kfusion[1] = SK_MX[0]*(P[1][19] + P[1][1]*SH_MAG[0] - P[1][2]*SH_MAG[1] + P[1][3]*SH_MAG[2] + P[1][0]*SK_MX[2] - P[1][16]*SK_MX[1] + P[1][17]*SK_MX[4] - P[1][18]*SK_MX[3]);
+				Kfusion[2] = SK_MX[0]*(P[2][19] + P[2][1]*SH_MAG[0] - P[2][2]*SH_MAG[1] + P[2][3]*SH_MAG[2] + P[2][0]*SK_MX[2] - P[2][16]*SK_MX[1] + P[2][17]*SK_MX[4] - P[2][18]*SK_MX[3]);
+				Kfusion[3] = SK_MX[0]*(P[3][19] + P[3][1]*SH_MAG[0] - P[3][2]*SH_MAG[1] + P[3][3]*SH_MAG[2] + P[3][0]*SK_MX[2] - P[3][16]*SK_MX[1] + P[3][17]*SK_MX[4] - P[3][18]*SK_MX[3]);
+				Kfusion[4] = SK_MX[0]*(P[4][19] + P[4][1]*SH_MAG[0] - P[4][2]*SH_MAG[1] + P[4][3]*SH_MAG[2] + P[4][0]*SK_MX[2] - P[4][16]*SK_MX[1] + P[4][17]*SK_MX[4] - P[4][18]*SK_MX[3]);
+				Kfusion[5] = SK_MX[0]*(P[5][19] + P[5][1]*SH_MAG[0] - P[5][2]*SH_MAG[1] + P[5][3]*SH_MAG[2] + P[5][0]*SK_MX[2] - P[5][16]*SK_MX[1] + P[5][17]*SK_MX[4] - P[5][18]*SK_MX[3]);
+				Kfusion[6] = SK_MX[0]*(P[6][19] + P[6][1]*SH_MAG[0] - P[6][2]*SH_MAG[1] + P[6][3]*SH_MAG[2] + P[6][0]*SK_MX[2] - P[6][16]*SK_MX[1] + P[6][17]*SK_MX[4] - P[6][18]*SK_MX[3]);
+				Kfusion[7] = SK_MX[0]*(P[7][19] + P[7][1]*SH_MAG[0] - P[7][2]*SH_MAG[1] + P[7][3]*SH_MAG[2] + P[7][0]*SK_MX[2] - P[7][16]*SK_MX[1] + P[7][17]*SK_MX[4] - P[7][18]*SK_MX[3]);
+				Kfusion[8] = SK_MX[0]*(P[8][19] + P[8][1]*SH_MAG[0] - P[8][2]*SH_MAG[1] + P[8][3]*SH_MAG[2] + P[8][0]*SK_MX[2] - P[8][16]*SK_MX[1] + P[8][17]*SK_MX[4] - P[8][18]*SK_MX[3]);
+				Kfusion[9] = SK_MX[0]*(P[9][19] + P[9][1]*SH_MAG[0] - P[9][2]*SH_MAG[1] + P[9][3]*SH_MAG[2] + P[9][0]*SK_MX[2] - P[9][16]*SK_MX[1] + P[9][17]*SK_MX[4] - P[9][18]*SK_MX[3]);
+				Kfusion[10] = SK_MX[0]*(P[10][19] + P[10][1]*SH_MAG[0] - P[10][2]*SH_MAG[1] + P[10][3]*SH_MAG[2] + P[10][0]*SK_MX[2] - P[10][16]*SK_MX[1] + P[10][17]*SK_MX[4] - P[10][18]*SK_MX[3]);
+				Kfusion[11] = SK_MX[0]*(P[11][19] + P[11][1]*SH_MAG[0] - P[11][2]*SH_MAG[1] + P[11][3]*SH_MAG[2] + P[11][0]*SK_MX[2] - P[11][16]*SK_MX[1] + P[11][17]*SK_MX[4] - P[11][18]*SK_MX[3]);
+				Kfusion[12] = SK_MX[0]*(P[12][19] + P[12][1]*SH_MAG[0] - P[12][2]*SH_MAG[1] + P[12][3]*SH_MAG[2] + P[12][0]*SK_MX[2] - P[12][16]*SK_MX[1] + P[12][17]*SK_MX[4] - P[12][18]*SK_MX[3]);
+				Kfusion[13] = SK_MX[0]*(P[13][19] + P[13][1]*SH_MAG[0] - P[13][2]*SH_MAG[1] + P[13][3]*SH_MAG[2] + P[13][0]*SK_MX[2] - P[13][16]*SK_MX[1] + P[13][17]*SK_MX[4] - P[13][18]*SK_MX[3]);
+				Kfusion[14] = SK_MX[0]*(P[14][19] + P[14][1]*SH_MAG[0] - P[14][2]*SH_MAG[1] + P[14][3]*SH_MAG[2] + P[14][0]*SK_MX[2] - P[14][16]*SK_MX[1] + P[14][17]*SK_MX[4] - P[14][18]*SK_MX[3]);
+				Kfusion[15] = SK_MX[0]*(P[15][19] + P[15][1]*SH_MAG[0] - P[15][2]*SH_MAG[1] + P[15][3]*SH_MAG[2] + P[15][0]*SK_MX[2] - P[15][16]*SK_MX[1] + P[15][17]*SK_MX[4] - P[15][18]*SK_MX[3]);
+				Kfusion[22] = SK_MX[0]*(P[22][19] + P[22][1]*SH_MAG[0] - P[22][2]*SH_MAG[1] + P[22][3]*SH_MAG[2] + P[22][0]*SK_MX[2] - P[22][16]*SK_MX[1] + P[22][17]*SK_MX[4] - P[22][18]*SK_MX[3]);
+				Kfusion[23] = SK_MX[0]*(P[23][19] + P[23][1]*SH_MAG[0] - P[23][2]*SH_MAG[1] + P[23][3]*SH_MAG[2] + P[23][0]*SK_MX[2] - P[23][16]*SK_MX[1] + P[23][17]*SK_MX[4] - P[23][18]*SK_MX[3]);
+			} else {
+				for (uint8_t i = 0; i < 16; i++) {
+					Kfusion[i] = 0.0f;
+				}
+
+				Kfusion[22] = 0.0f;
+				Kfusion[23] = 0.0f;
+			}
+
 			Kfusion[16] = SK_MX[0]*(P[16][19] + P[16][1]*SH_MAG[0] - P[16][2]*SH_MAG[1] + P[16][3]*SH_MAG[2] + P[16][0]*SK_MX[2] - P[16][16]*SK_MX[1] + P[16][17]*SK_MX[4] - P[16][18]*SK_MX[3]);
 			Kfusion[17] = SK_MX[0]*(P[17][19] + P[17][1]*SH_MAG[0] - P[17][2]*SH_MAG[1] + P[17][3]*SH_MAG[2] + P[17][0]*SK_MX[2] - P[17][16]*SK_MX[1] + P[17][17]*SK_MX[4] - P[17][18]*SK_MX[3]);
 			Kfusion[18] = SK_MX[0]*(P[18][19] + P[18][1]*SH_MAG[0] - P[18][2]*SH_MAG[1] + P[18][3]*SH_MAG[2] + P[18][0]*SK_MX[2] - P[18][16]*SK_MX[1] + P[18][17]*SK_MX[4] - P[18][18]*SK_MX[3]);
 			Kfusion[19] = SK_MX[0]*(P[19][19] + P[19][1]*SH_MAG[0] - P[19][2]*SH_MAG[1] + P[19][3]*SH_MAG[2] + P[19][0]*SK_MX[2] - P[19][16]*SK_MX[1] + P[19][17]*SK_MX[4] - P[19][18]*SK_MX[3]);
 			Kfusion[20] = SK_MX[0]*(P[20][19] + P[20][1]*SH_MAG[0] - P[20][2]*SH_MAG[1] + P[20][3]*SH_MAG[2] + P[20][0]*SK_MX[2] - P[20][16]*SK_MX[1] + P[20][17]*SK_MX[4] - P[20][18]*SK_MX[3]);
 			Kfusion[21] = SK_MX[0]*(P[21][19] + P[21][1]*SH_MAG[0] - P[21][2]*SH_MAG[1] + P[21][3]*SH_MAG[2] + P[21][0]*SK_MX[2] - P[21][16]*SK_MX[1] + P[21][17]*SK_MX[4] - P[21][18]*SK_MX[3]);
-			Kfusion[22] = SK_MX[0]*(P[22][19] + P[22][1]*SH_MAG[0] - P[22][2]*SH_MAG[1] + P[22][3]*SH_MAG[2] + P[22][0]*SK_MX[2] - P[22][16]*SK_MX[1] + P[22][17]*SK_MX[4] - P[22][18]*SK_MX[3]);
-			Kfusion[23] = SK_MX[0]*(P[23][19] + P[23][1]*SH_MAG[0] - P[23][2]*SH_MAG[1] + P[23][3]*SH_MAG[2] + P[23][0]*SK_MX[2] - P[23][16]*SK_MX[1] + P[23][17]*SK_MX[4] - P[23][18]*SK_MX[3]);
 
 		} else if (index == 1) {
 			// Calculate Y axis observation jacobians
@@ -232,30 +248,40 @@ void Ekf::fuseMag()
 			SK_MY[3] = 2.0f*q0*q3 - 2.0f*q1*q2;
 			SK_MY[4] = 2.0f*q0*q1 + 2.0f*q2*q3;
 
-			Kfusion[0] = SK_MY[0]*(P[0][20] + P[0][0]*SH_MAG[2] + P[0][1]*SH_MAG[1] + P[0][2]*SH_MAG[0] - P[0][3]*SK_MY[2] - P[0][17]*SK_MY[1] - P[0][16]*SK_MY[3] + P[0][18]*SK_MY[4]);
-			Kfusion[1] = SK_MY[0]*(P[1][20] + P[1][0]*SH_MAG[2] + P[1][1]*SH_MAG[1] + P[1][2]*SH_MAG[0] - P[1][3]*SK_MY[2] - P[1][17]*SK_MY[1] - P[1][16]*SK_MY[3] + P[1][18]*SK_MY[4]);
-			Kfusion[2] = SK_MY[0]*(P[2][20] + P[2][0]*SH_MAG[2] + P[2][1]*SH_MAG[1] + P[2][2]*SH_MAG[0] - P[2][3]*SK_MY[2] - P[2][17]*SK_MY[1] - P[2][16]*SK_MY[3] + P[2][18]*SK_MY[4]);
-			Kfusion[3] = SK_MY[0]*(P[3][20] + P[3][0]*SH_MAG[2] + P[3][1]*SH_MAG[1] + P[3][2]*SH_MAG[0] - P[3][3]*SK_MY[2] - P[3][17]*SK_MY[1] - P[3][16]*SK_MY[3] + P[3][18]*SK_MY[4]);
-			Kfusion[4] = SK_MY[0]*(P[4][20] + P[4][0]*SH_MAG[2] + P[4][1]*SH_MAG[1] + P[4][2]*SH_MAG[0] - P[4][3]*SK_MY[2] - P[4][17]*SK_MY[1] - P[4][16]*SK_MY[3] + P[4][18]*SK_MY[4]);
-			Kfusion[5] = SK_MY[0]*(P[5][20] + P[5][0]*SH_MAG[2] + P[5][1]*SH_MAG[1] + P[5][2]*SH_MAG[0] - P[5][3]*SK_MY[2] - P[5][17]*SK_MY[1] - P[5][16]*SK_MY[3] + P[5][18]*SK_MY[4]);
-			Kfusion[6] = SK_MY[0]*(P[6][20] + P[6][0]*SH_MAG[2] + P[6][1]*SH_MAG[1] + P[6][2]*SH_MAG[0] - P[6][3]*SK_MY[2] - P[6][17]*SK_MY[1] - P[6][16]*SK_MY[3] + P[6][18]*SK_MY[4]);
-			Kfusion[7] = SK_MY[0]*(P[7][20] + P[7][0]*SH_MAG[2] + P[7][1]*SH_MAG[1] + P[7][2]*SH_MAG[0] - P[7][3]*SK_MY[2] - P[7][17]*SK_MY[1] - P[7][16]*SK_MY[3] + P[7][18]*SK_MY[4]);
-			Kfusion[8] = SK_MY[0]*(P[8][20] + P[8][0]*SH_MAG[2] + P[8][1]*SH_MAG[1] + P[8][2]*SH_MAG[0] - P[8][3]*SK_MY[2] - P[8][17]*SK_MY[1] - P[8][16]*SK_MY[3] + P[8][18]*SK_MY[4]);
-			Kfusion[9] = SK_MY[0]*(P[9][20] + P[9][0]*SH_MAG[2] + P[9][1]*SH_MAG[1] + P[9][2]*SH_MAG[0] - P[9][3]*SK_MY[2] - P[9][17]*SK_MY[1] - P[9][16]*SK_MY[3] + P[9][18]*SK_MY[4]);
-			Kfusion[10] = SK_MY[0]*(P[10][20] + P[10][0]*SH_MAG[2] + P[10][1]*SH_MAG[1] + P[10][2]*SH_MAG[0] - P[10][3]*SK_MY[2] - P[10][17]*SK_MY[1] - P[10][16]*SK_MY[3] + P[10][18]*SK_MY[4]);
-			Kfusion[11] = SK_MY[0]*(P[11][20] + P[11][0]*SH_MAG[2] + P[11][1]*SH_MAG[1] + P[11][2]*SH_MAG[0] - P[11][3]*SK_MY[2] - P[11][17]*SK_MY[1] - P[11][16]*SK_MY[3] + P[11][18]*SK_MY[4]);
-			Kfusion[12] = SK_MY[0]*(P[12][20] + P[12][0]*SH_MAG[2] + P[12][1]*SH_MAG[1] + P[12][2]*SH_MAG[0] - P[12][3]*SK_MY[2] - P[12][17]*SK_MY[1] - P[12][16]*SK_MY[3] + P[12][18]*SK_MY[4]);
-			Kfusion[13] = SK_MY[0]*(P[13][20] + P[13][0]*SH_MAG[2] + P[13][1]*SH_MAG[1] + P[13][2]*SH_MAG[0] - P[13][3]*SK_MY[2] - P[13][17]*SK_MY[1] - P[13][16]*SK_MY[3] + P[13][18]*SK_MY[4]);
-			Kfusion[14] = SK_MY[0]*(P[14][20] + P[14][0]*SH_MAG[2] + P[14][1]*SH_MAG[1] + P[14][2]*SH_MAG[0] - P[14][3]*SK_MY[2] - P[14][17]*SK_MY[1] - P[14][16]*SK_MY[3] + P[14][18]*SK_MY[4]);
-			Kfusion[15] = SK_MY[0]*(P[15][20] + P[15][0]*SH_MAG[2] + P[15][1]*SH_MAG[1] + P[15][2]*SH_MAG[0] - P[15][3]*SK_MY[2] - P[15][17]*SK_MY[1] - P[15][16]*SK_MY[3] + P[15][18]*SK_MY[4]);
+			if (update_all_states) {
+				Kfusion[0] = SK_MY[0]*(P[0][20] + P[0][0]*SH_MAG[2] + P[0][1]*SH_MAG[1] + P[0][2]*SH_MAG[0] - P[0][3]*SK_MY[2] - P[0][17]*SK_MY[1] - P[0][16]*SK_MY[3] + P[0][18]*SK_MY[4]);
+				Kfusion[1] = SK_MY[0]*(P[1][20] + P[1][0]*SH_MAG[2] + P[1][1]*SH_MAG[1] + P[1][2]*SH_MAG[0] - P[1][3]*SK_MY[2] - P[1][17]*SK_MY[1] - P[1][16]*SK_MY[3] + P[1][18]*SK_MY[4]);
+				Kfusion[2] = SK_MY[0]*(P[2][20] + P[2][0]*SH_MAG[2] + P[2][1]*SH_MAG[1] + P[2][2]*SH_MAG[0] - P[2][3]*SK_MY[2] - P[2][17]*SK_MY[1] - P[2][16]*SK_MY[3] + P[2][18]*SK_MY[4]);
+				Kfusion[3] = SK_MY[0]*(P[3][20] + P[3][0]*SH_MAG[2] + P[3][1]*SH_MAG[1] + P[3][2]*SH_MAG[0] - P[3][3]*SK_MY[2] - P[3][17]*SK_MY[1] - P[3][16]*SK_MY[3] + P[3][18]*SK_MY[4]);
+				Kfusion[4] = SK_MY[0]*(P[4][20] + P[4][0]*SH_MAG[2] + P[4][1]*SH_MAG[1] + P[4][2]*SH_MAG[0] - P[4][3]*SK_MY[2] - P[4][17]*SK_MY[1] - P[4][16]*SK_MY[3] + P[4][18]*SK_MY[4]);
+				Kfusion[5] = SK_MY[0]*(P[5][20] + P[5][0]*SH_MAG[2] + P[5][1]*SH_MAG[1] + P[5][2]*SH_MAG[0] - P[5][3]*SK_MY[2] - P[5][17]*SK_MY[1] - P[5][16]*SK_MY[3] + P[5][18]*SK_MY[4]);
+				Kfusion[6] = SK_MY[0]*(P[6][20] + P[6][0]*SH_MAG[2] + P[6][1]*SH_MAG[1] + P[6][2]*SH_MAG[0] - P[6][3]*SK_MY[2] - P[6][17]*SK_MY[1] - P[6][16]*SK_MY[3] + P[6][18]*SK_MY[4]);
+				Kfusion[7] = SK_MY[0]*(P[7][20] + P[7][0]*SH_MAG[2] + P[7][1]*SH_MAG[1] + P[7][2]*SH_MAG[0] - P[7][3]*SK_MY[2] - P[7][17]*SK_MY[1] - P[7][16]*SK_MY[3] + P[7][18]*SK_MY[4]);
+				Kfusion[8] = SK_MY[0]*(P[8][20] + P[8][0]*SH_MAG[2] + P[8][1]*SH_MAG[1] + P[8][2]*SH_MAG[0] - P[8][3]*SK_MY[2] - P[8][17]*SK_MY[1] - P[8][16]*SK_MY[3] + P[8][18]*SK_MY[4]);
+				Kfusion[9] = SK_MY[0]*(P[9][20] + P[9][0]*SH_MAG[2] + P[9][1]*SH_MAG[1] + P[9][2]*SH_MAG[0] - P[9][3]*SK_MY[2] - P[9][17]*SK_MY[1] - P[9][16]*SK_MY[3] + P[9][18]*SK_MY[4]);
+				Kfusion[10] = SK_MY[0]*(P[10][20] + P[10][0]*SH_MAG[2] + P[10][1]*SH_MAG[1] + P[10][2]*SH_MAG[0] - P[10][3]*SK_MY[2] - P[10][17]*SK_MY[1] - P[10][16]*SK_MY[3] + P[10][18]*SK_MY[4]);
+				Kfusion[11] = SK_MY[0]*(P[11][20] + P[11][0]*SH_MAG[2] + P[11][1]*SH_MAG[1] + P[11][2]*SH_MAG[0] - P[11][3]*SK_MY[2] - P[11][17]*SK_MY[1] - P[11][16]*SK_MY[3] + P[11][18]*SK_MY[4]);
+				Kfusion[12] = SK_MY[0]*(P[12][20] + P[12][0]*SH_MAG[2] + P[12][1]*SH_MAG[1] + P[12][2]*SH_MAG[0] - P[12][3]*SK_MY[2] - P[12][17]*SK_MY[1] - P[12][16]*SK_MY[3] + P[12][18]*SK_MY[4]);
+				Kfusion[13] = SK_MY[0]*(P[13][20] + P[13][0]*SH_MAG[2] + P[13][1]*SH_MAG[1] + P[13][2]*SH_MAG[0] - P[13][3]*SK_MY[2] - P[13][17]*SK_MY[1] - P[13][16]*SK_MY[3] + P[13][18]*SK_MY[4]);
+				Kfusion[14] = SK_MY[0]*(P[14][20] + P[14][0]*SH_MAG[2] + P[14][1]*SH_MAG[1] + P[14][2]*SH_MAG[0] - P[14][3]*SK_MY[2] - P[14][17]*SK_MY[1] - P[14][16]*SK_MY[3] + P[14][18]*SK_MY[4]);
+				Kfusion[15] = SK_MY[0]*(P[15][20] + P[15][0]*SH_MAG[2] + P[15][1]*SH_MAG[1] + P[15][2]*SH_MAG[0] - P[15][3]*SK_MY[2] - P[15][17]*SK_MY[1] - P[15][16]*SK_MY[3] + P[15][18]*SK_MY[4]);
+				Kfusion[22] = SK_MY[0]*(P[22][20] + P[22][0]*SH_MAG[2] + P[22][1]*SH_MAG[1] + P[22][2]*SH_MAG[0] - P[22][3]*SK_MY[2] - P[22][17]*SK_MY[1] - P[22][16]*SK_MY[3] + P[22][18]*SK_MY[4]);
+				Kfusion[23] = SK_MY[0]*(P[23][20] + P[23][0]*SH_MAG[2] + P[23][1]*SH_MAG[1] + P[23][2]*SH_MAG[0] - P[23][3]*SK_MY[2] - P[23][17]*SK_MY[1] - P[23][16]*SK_MY[3] + P[23][18]*SK_MY[4]);
+			} else {
+				for (uint8_t i = 0; i < 16; i++) {
+					Kfusion[i] = 0.0f;
+				}
+
+				Kfusion[22] = 0.0f;
+				Kfusion[23] = 0.0f;
+			}
+
 			Kfusion[16] = SK_MY[0]*(P[16][20] + P[16][0]*SH_MAG[2] + P[16][1]*SH_MAG[1] + P[16][2]*SH_MAG[0] - P[16][3]*SK_MY[2] - P[16][17]*SK_MY[1] - P[16][16]*SK_MY[3] + P[16][18]*SK_MY[4]);
 			Kfusion[17] = SK_MY[0]*(P[17][20] + P[17][0]*SH_MAG[2] + P[17][1]*SH_MAG[1] + P[17][2]*SH_MAG[0] - P[17][3]*SK_MY[2] - P[17][17]*SK_MY[1] - P[17][16]*SK_MY[3] + P[17][18]*SK_MY[4]);
 			Kfusion[18] = SK_MY[0]*(P[18][20] + P[18][0]*SH_MAG[2] + P[18][1]*SH_MAG[1] + P[18][2]*SH_MAG[0] - P[18][3]*SK_MY[2] - P[18][17]*SK_MY[1] - P[18][16]*SK_MY[3] + P[18][18]*SK_MY[4]);
 			Kfusion[19] = SK_MY[0]*(P[19][20] + P[19][0]*SH_MAG[2] + P[19][1]*SH_MAG[1] + P[19][2]*SH_MAG[0] - P[19][3]*SK_MY[2] - P[19][17]*SK_MY[1] - P[19][16]*SK_MY[3] + P[19][18]*SK_MY[4]);
 			Kfusion[20] = SK_MY[0]*(P[20][20] + P[20][0]*SH_MAG[2] + P[20][1]*SH_MAG[1] + P[20][2]*SH_MAG[0] - P[20][3]*SK_MY[2] - P[20][17]*SK_MY[1] - P[20][16]*SK_MY[3] + P[20][18]*SK_MY[4]);
 			Kfusion[21] = SK_MY[0]*(P[21][20] + P[21][0]*SH_MAG[2] + P[21][1]*SH_MAG[1] + P[21][2]*SH_MAG[0] - P[21][3]*SK_MY[2] - P[21][17]*SK_MY[1] - P[21][16]*SK_MY[3] + P[21][18]*SK_MY[4]);
-			Kfusion[22] = SK_MY[0]*(P[22][20] + P[22][0]*SH_MAG[2] + P[22][1]*SH_MAG[1] + P[22][2]*SH_MAG[0] - P[22][3]*SK_MY[2] - P[22][17]*SK_MY[1] - P[22][16]*SK_MY[3] + P[22][18]*SK_MY[4]);
-			Kfusion[23] = SK_MY[0]*(P[23][20] + P[23][0]*SH_MAG[2] + P[23][1]*SH_MAG[1] + P[23][2]*SH_MAG[0] - P[23][3]*SK_MY[2] - P[23][17]*SK_MY[1] - P[23][16]*SK_MY[3] + P[23][18]*SK_MY[4]);
 
 		} else if (index == 2) {
 			// calculate Z axis observation jacobians
@@ -277,30 +303,40 @@ void Ekf::fuseMag()
 			SK_MZ[3] = 2.0f*q0*q1 - 2.0f*q2*q3;
 			SK_MZ[4] = 2.0f*q0*q2 + 2.0f*q1*q3;
 
-			Kfusion[0] = SK_MZ[0]*(P[0][21] + P[0][0]*SH_MAG[1] - P[0][1]*SH_MAG[2] + P[0][3]*SH_MAG[0] + P[0][2]*SK_MZ[2] + P[0][18]*SK_MZ[1] + P[0][16]*SK_MZ[4] - P[0][17]*SK_MZ[3]);
-			Kfusion[1] = SK_MZ[0]*(P[1][21] + P[1][0]*SH_MAG[1] - P[1][1]*SH_MAG[2] + P[1][3]*SH_MAG[0] + P[1][2]*SK_MZ[2] + P[1][18]*SK_MZ[1] + P[1][16]*SK_MZ[4] - P[1][17]*SK_MZ[3]);
-			Kfusion[2] = SK_MZ[0]*(P[2][21] + P[2][0]*SH_MAG[1] - P[2][1]*SH_MAG[2] + P[2][3]*SH_MAG[0] + P[2][2]*SK_MZ[2] + P[2][18]*SK_MZ[1] + P[2][16]*SK_MZ[4] - P[2][17]*SK_MZ[3]);
-			Kfusion[3] = SK_MZ[0]*(P[3][21] + P[3][0]*SH_MAG[1] - P[3][1]*SH_MAG[2] + P[3][3]*SH_MAG[0] + P[3][2]*SK_MZ[2] + P[3][18]*SK_MZ[1] + P[3][16]*SK_MZ[4] - P[3][17]*SK_MZ[3]);
-			Kfusion[4] = SK_MZ[0]*(P[4][21] + P[4][0]*SH_MAG[1] - P[4][1]*SH_MAG[2] + P[4][3]*SH_MAG[0] + P[4][2]*SK_MZ[2] + P[4][18]*SK_MZ[1] + P[4][16]*SK_MZ[4] - P[4][17]*SK_MZ[3]);
-			Kfusion[5] = SK_MZ[0]*(P[5][21] + P[5][0]*SH_MAG[1] - P[5][1]*SH_MAG[2] + P[5][3]*SH_MAG[0] + P[5][2]*SK_MZ[2] + P[5][18]*SK_MZ[1] + P[5][16]*SK_MZ[4] - P[5][17]*SK_MZ[3]);
-			Kfusion[6] = SK_MZ[0]*(P[6][21] + P[6][0]*SH_MAG[1] - P[6][1]*SH_MAG[2] + P[6][3]*SH_MAG[0] + P[6][2]*SK_MZ[2] + P[6][18]*SK_MZ[1] + P[6][16]*SK_MZ[4] - P[6][17]*SK_MZ[3]);
-			Kfusion[7] = SK_MZ[0]*(P[7][21] + P[7][0]*SH_MAG[1] - P[7][1]*SH_MAG[2] + P[7][3]*SH_MAG[0] + P[7][2]*SK_MZ[2] + P[7][18]*SK_MZ[1] + P[7][16]*SK_MZ[4] - P[7][17]*SK_MZ[3]);
-			Kfusion[8] = SK_MZ[0]*(P[8][21] + P[8][0]*SH_MAG[1] - P[8][1]*SH_MAG[2] + P[8][3]*SH_MAG[0] + P[8][2]*SK_MZ[2] + P[8][18]*SK_MZ[1] + P[8][16]*SK_MZ[4] - P[8][17]*SK_MZ[3]);
-			Kfusion[9] = SK_MZ[0]*(P[9][21] + P[9][0]*SH_MAG[1] - P[9][1]*SH_MAG[2] + P[9][3]*SH_MAG[0] + P[9][2]*SK_MZ[2] + P[9][18]*SK_MZ[1] + P[9][16]*SK_MZ[4] - P[9][17]*SK_MZ[3]);
-			Kfusion[10] = SK_MZ[0]*(P[10][21] + P[10][0]*SH_MAG[1] - P[10][1]*SH_MAG[2] + P[10][3]*SH_MAG[0] + P[10][2]*SK_MZ[2] + P[10][18]*SK_MZ[1] + P[10][16]*SK_MZ[4] - P[10][17]*SK_MZ[3]);
-			Kfusion[11] = SK_MZ[0]*(P[11][21] + P[11][0]*SH_MAG[1] - P[11][1]*SH_MAG[2] + P[11][3]*SH_MAG[0] + P[11][2]*SK_MZ[2] + P[11][18]*SK_MZ[1] + P[11][16]*SK_MZ[4] - P[11][17]*SK_MZ[3]);
-			Kfusion[12] = SK_MZ[0]*(P[12][21] + P[12][0]*SH_MAG[1] - P[12][1]*SH_MAG[2] + P[12][3]*SH_MAG[0] + P[12][2]*SK_MZ[2] + P[12][18]*SK_MZ[1] + P[12][16]*SK_MZ[4] - P[12][17]*SK_MZ[3]);
-			Kfusion[13] = SK_MZ[0]*(P[13][21] + P[13][0]*SH_MAG[1] - P[13][1]*SH_MAG[2] + P[13][3]*SH_MAG[0] + P[13][2]*SK_MZ[2] + P[13][18]*SK_MZ[1] + P[13][16]*SK_MZ[4] - P[13][17]*SK_MZ[3]);
-			Kfusion[14] = SK_MZ[0]*(P[14][21] + P[14][0]*SH_MAG[1] - P[14][1]*SH_MAG[2] + P[14][3]*SH_MAG[0] + P[14][2]*SK_MZ[2] + P[14][18]*SK_MZ[1] + P[14][16]*SK_MZ[4] - P[14][17]*SK_MZ[3]);
-			Kfusion[15] = SK_MZ[0]*(P[15][21] + P[15][0]*SH_MAG[1] - P[15][1]*SH_MAG[2] + P[15][3]*SH_MAG[0] + P[15][2]*SK_MZ[2] + P[15][18]*SK_MZ[1] + P[15][16]*SK_MZ[4] - P[15][17]*SK_MZ[3]);
+			if (update_all_states) {
+				Kfusion[0] = SK_MZ[0]*(P[0][21] + P[0][0]*SH_MAG[1] - P[0][1]*SH_MAG[2] + P[0][3]*SH_MAG[0] + P[0][2]*SK_MZ[2] + P[0][18]*SK_MZ[1] + P[0][16]*SK_MZ[4] - P[0][17]*SK_MZ[3]);
+				Kfusion[1] = SK_MZ[0]*(P[1][21] + P[1][0]*SH_MAG[1] - P[1][1]*SH_MAG[2] + P[1][3]*SH_MAG[0] + P[1][2]*SK_MZ[2] + P[1][18]*SK_MZ[1] + P[1][16]*SK_MZ[4] - P[1][17]*SK_MZ[3]);
+				Kfusion[2] = SK_MZ[0]*(P[2][21] + P[2][0]*SH_MAG[1] - P[2][1]*SH_MAG[2] + P[2][3]*SH_MAG[0] + P[2][2]*SK_MZ[2] + P[2][18]*SK_MZ[1] + P[2][16]*SK_MZ[4] - P[2][17]*SK_MZ[3]);
+				Kfusion[3] = SK_MZ[0]*(P[3][21] + P[3][0]*SH_MAG[1] - P[3][1]*SH_MAG[2] + P[3][3]*SH_MAG[0] + P[3][2]*SK_MZ[2] + P[3][18]*SK_MZ[1] + P[3][16]*SK_MZ[4] - P[3][17]*SK_MZ[3]);
+				Kfusion[4] = SK_MZ[0]*(P[4][21] + P[4][0]*SH_MAG[1] - P[4][1]*SH_MAG[2] + P[4][3]*SH_MAG[0] + P[4][2]*SK_MZ[2] + P[4][18]*SK_MZ[1] + P[4][16]*SK_MZ[4] - P[4][17]*SK_MZ[3]);
+				Kfusion[5] = SK_MZ[0]*(P[5][21] + P[5][0]*SH_MAG[1] - P[5][1]*SH_MAG[2] + P[5][3]*SH_MAG[0] + P[5][2]*SK_MZ[2] + P[5][18]*SK_MZ[1] + P[5][16]*SK_MZ[4] - P[5][17]*SK_MZ[3]);
+				Kfusion[6] = SK_MZ[0]*(P[6][21] + P[6][0]*SH_MAG[1] - P[6][1]*SH_MAG[2] + P[6][3]*SH_MAG[0] + P[6][2]*SK_MZ[2] + P[6][18]*SK_MZ[1] + P[6][16]*SK_MZ[4] - P[6][17]*SK_MZ[3]);
+				Kfusion[7] = SK_MZ[0]*(P[7][21] + P[7][0]*SH_MAG[1] - P[7][1]*SH_MAG[2] + P[7][3]*SH_MAG[0] + P[7][2]*SK_MZ[2] + P[7][18]*SK_MZ[1] + P[7][16]*SK_MZ[4] - P[7][17]*SK_MZ[3]);
+				Kfusion[8] = SK_MZ[0]*(P[8][21] + P[8][0]*SH_MAG[1] - P[8][1]*SH_MAG[2] + P[8][3]*SH_MAG[0] + P[8][2]*SK_MZ[2] + P[8][18]*SK_MZ[1] + P[8][16]*SK_MZ[4] - P[8][17]*SK_MZ[3]);
+				Kfusion[9] = SK_MZ[0]*(P[9][21] + P[9][0]*SH_MAG[1] - P[9][1]*SH_MAG[2] + P[9][3]*SH_MAG[0] + P[9][2]*SK_MZ[2] + P[9][18]*SK_MZ[1] + P[9][16]*SK_MZ[4] - P[9][17]*SK_MZ[3]);
+				Kfusion[10] = SK_MZ[0]*(P[10][21] + P[10][0]*SH_MAG[1] - P[10][1]*SH_MAG[2] + P[10][3]*SH_MAG[0] + P[10][2]*SK_MZ[2] + P[10][18]*SK_MZ[1] + P[10][16]*SK_MZ[4] - P[10][17]*SK_MZ[3]);
+				Kfusion[11] = SK_MZ[0]*(P[11][21] + P[11][0]*SH_MAG[1] - P[11][1]*SH_MAG[2] + P[11][3]*SH_MAG[0] + P[11][2]*SK_MZ[2] + P[11][18]*SK_MZ[1] + P[11][16]*SK_MZ[4] - P[11][17]*SK_MZ[3]);
+				Kfusion[12] = SK_MZ[0]*(P[12][21] + P[12][0]*SH_MAG[1] - P[12][1]*SH_MAG[2] + P[12][3]*SH_MAG[0] + P[12][2]*SK_MZ[2] + P[12][18]*SK_MZ[1] + P[12][16]*SK_MZ[4] - P[12][17]*SK_MZ[3]);
+				Kfusion[13] = SK_MZ[0]*(P[13][21] + P[13][0]*SH_MAG[1] - P[13][1]*SH_MAG[2] + P[13][3]*SH_MAG[0] + P[13][2]*SK_MZ[2] + P[13][18]*SK_MZ[1] + P[13][16]*SK_MZ[4] - P[13][17]*SK_MZ[3]);
+				Kfusion[14] = SK_MZ[0]*(P[14][21] + P[14][0]*SH_MAG[1] - P[14][1]*SH_MAG[2] + P[14][3]*SH_MAG[0] + P[14][2]*SK_MZ[2] + P[14][18]*SK_MZ[1] + P[14][16]*SK_MZ[4] - P[14][17]*SK_MZ[3]);
+				Kfusion[15] = SK_MZ[0]*(P[15][21] + P[15][0]*SH_MAG[1] - P[15][1]*SH_MAG[2] + P[15][3]*SH_MAG[0] + P[15][2]*SK_MZ[2] + P[15][18]*SK_MZ[1] + P[15][16]*SK_MZ[4] - P[15][17]*SK_MZ[3]);
+				Kfusion[22] = SK_MZ[0]*(P[22][21] + P[22][0]*SH_MAG[1] - P[22][1]*SH_MAG[2] + P[22][3]*SH_MAG[0] + P[22][2]*SK_MZ[2] + P[22][18]*SK_MZ[1] + P[22][16]*SK_MZ[4] - P[22][17]*SK_MZ[3]);
+				Kfusion[23] = SK_MZ[0]*(P[23][21] + P[23][0]*SH_MAG[1] - P[23][1]*SH_MAG[2] + P[23][3]*SH_MAG[0] + P[23][2]*SK_MZ[2] + P[23][18]*SK_MZ[1] + P[23][16]*SK_MZ[4] - P[23][17]*SK_MZ[3]);
+			} else {
+				for (uint8_t i = 0; i < 16; i++) {
+					Kfusion[i] = 0.0f;
+				}
+
+				Kfusion[22] = 0.0f;
+				Kfusion[23] = 0.0f;
+			}
+
 			Kfusion[16] = SK_MZ[0]*(P[16][21] + P[16][0]*SH_MAG[1] - P[16][1]*SH_MAG[2] + P[16][3]*SH_MAG[0] + P[16][2]*SK_MZ[2] + P[16][18]*SK_MZ[1] + P[16][16]*SK_MZ[4] - P[16][17]*SK_MZ[3]);
 			Kfusion[17] = SK_MZ[0]*(P[17][21] + P[17][0]*SH_MAG[1] - P[17][1]*SH_MAG[2] + P[17][3]*SH_MAG[0] + P[17][2]*SK_MZ[2] + P[17][18]*SK_MZ[1] + P[17][16]*SK_MZ[4] - P[17][17]*SK_MZ[3]);
 			Kfusion[18] = SK_MZ[0]*(P[18][21] + P[18][0]*SH_MAG[1] - P[18][1]*SH_MAG[2] + P[18][3]*SH_MAG[0] + P[18][2]*SK_MZ[2] + P[18][18]*SK_MZ[1] + P[18][16]*SK_MZ[4] - P[18][17]*SK_MZ[3]);
 			Kfusion[19] = SK_MZ[0]*(P[19][21] + P[19][0]*SH_MAG[1] - P[19][1]*SH_MAG[2] + P[19][3]*SH_MAG[0] + P[19][2]*SK_MZ[2] + P[19][18]*SK_MZ[1] + P[19][16]*SK_MZ[4] - P[19][17]*SK_MZ[3]);
 			Kfusion[20] = SK_MZ[0]*(P[20][21] + P[20][0]*SH_MAG[1] - P[20][1]*SH_MAG[2] + P[20][3]*SH_MAG[0] + P[20][2]*SK_MZ[2] + P[20][18]*SK_MZ[1] + P[20][16]*SK_MZ[4] - P[20][17]*SK_MZ[3]);
 			Kfusion[21] = SK_MZ[0]*(P[21][21] + P[21][0]*SH_MAG[1] - P[21][1]*SH_MAG[2] + P[21][3]*SH_MAG[0] + P[21][2]*SK_MZ[2] + P[21][18]*SK_MZ[1] + P[21][16]*SK_MZ[4] - P[21][17]*SK_MZ[3]);
-			Kfusion[22] = SK_MZ[0]*(P[22][21] + P[22][0]*SH_MAG[1] - P[22][1]*SH_MAG[2] + P[22][3]*SH_MAG[0] + P[22][2]*SK_MZ[2] + P[22][18]*SK_MZ[1] + P[22][16]*SK_MZ[4] - P[22][17]*SK_MZ[3]);
-			Kfusion[23] = SK_MZ[0]*(P[23][21] + P[23][0]*SH_MAG[1] - P[23][1]*SH_MAG[2] + P[23][3]*SH_MAG[0] + P[23][2]*SK_MZ[2] + P[23][18]*SK_MZ[1] + P[23][16]*SK_MZ[4] - P[23][17]*SK_MZ[3]);
 
 		} else {
 			return;
@@ -309,29 +345,33 @@ void Ekf::fuseMag()
 		// apply covariance correction via P_new = (I -K*H)*P
 		// first calculate expression for KHP
 		// then calculate P - KHP
-		for (unsigned row = 0; row < _k_num_states; row++) {
-			for (unsigned column = 0; column <= 3; column++) {
-				KH[row][column] = Kfusion[row] * H_MAG[column];
-			}
-
-			for (unsigned column = 16; column <= 21; column++) {
-				KH[row][column] = Kfusion[row] * H_MAG[column];
-			}
-
-		}
+		float KHP[_k_num_states][_k_num_states];
+		float KH[10];
 
 		for (unsigned row = 0; row < _k_num_states; row++) {
+
+			KH[0] = Kfusion[row] * H_MAG[0];
+			KH[1] = Kfusion[row] * H_MAG[1];
+			KH[2] = Kfusion[row] * H_MAG[2];
+			KH[3] = Kfusion[row] * H_MAG[3];
+			KH[4] = Kfusion[row] * H_MAG[16];
+			KH[5] = Kfusion[row] * H_MAG[17];
+			KH[6] = Kfusion[row] * H_MAG[18];
+			KH[7] = Kfusion[row] * H_MAG[19];
+			KH[8] = Kfusion[row] * H_MAG[20];
+			KH[9] = Kfusion[row] * H_MAG[21];
+
 			for (unsigned column = 0; column < _k_num_states; column++) {
-				float tmp = KH[row][0] * P[0][column];
-				tmp += KH[row][1] * P[1][column];
-				tmp += KH[row][2] * P[2][column];
-				tmp += KH[row][3] * P[3][column];
-				tmp += KH[row][16] * P[16][column];
-				tmp += KH[row][17] * P[17][column];
-				tmp += KH[row][18] * P[18][column];
-				tmp += KH[row][19] * P[19][column];
-				tmp += KH[row][20] * P[20][column];
-				tmp += KH[row][21] * P[21][column];
+				float tmp = KH[0] * P[0][column];
+				tmp += KH[1] * P[1][column];
+				tmp += KH[2] * P[2][column];
+				tmp += KH[3] * P[3][column];
+				tmp += KH[4] * P[16][column];
+				tmp += KH[5] * P[17][column];
+				tmp += KH[6] * P[18][column];
+				tmp += KH[7] * P[19][column];
+				tmp += KH[8] * P[20][column];
+				tmp += KH[9] * P[21][column];
 				KHP[row][column] = tmp;
 			}
 		}
@@ -341,11 +381,12 @@ void Ekf::fuseMag()
 		_fault_status.flags.bad_mag_x = false;
 		_fault_status.flags.bad_mag_y = false;
 		_fault_status.flags.bad_mag_z = false;
+
 		for (int i = 0; i < _k_num_states; i++) {
 			if (P[i][i] < KHP[i][i]) {
 				// zero rows and columns
-				zeroRows(P,i,i);
-				zeroCols(P,i,i);
+				zeroRows(P, i, i);
+				zeroCols(P, i, i);
 
 				//flag as unhealthy
 				healthy = false;
@@ -353,8 +394,10 @@ void Ekf::fuseMag()
 				// update individual measurement health status
 				if (index == 0) {
 					_fault_status.flags.bad_mag_x = true;
+
 				} else if (index == 1) {
 					_fault_status.flags.bad_mag_y = true;
+
 				} else if (index == 2) {
 					_fault_status.flags.bad_mag_z = true;
 				}
@@ -391,7 +434,7 @@ void Ekf::fuseHeading()
 	float R_YAW = 1.0f;
 	float predicted_hdg;
 	float H_YAW[4];
-	matrix::Vector3f mag_earth_pred;
+	Vector3f mag_earth_pred;
 	float measured_hdg;
 
 	// determine if a 321 or 312 Euler sequence is best
@@ -427,24 +470,34 @@ void Ekf::fuseHeading()
 		H_YAW[3] = t8*t14*(q0*t3+q0*t4-q0*t5+q0*t6+q1*q2*q3*2.0f)*2.0f;
 
 		// rotate the magnetometer measurement into earth frame
-		matrix::Euler<float> euler321(_state.quat_nominal);
+		Eulerf euler321(_state.quat_nominal);
 		predicted_hdg = euler321(2); // we will need the predicted heading to calculate the innovation
-
-		// Set the yaw angle to zero and rotate the measurements into earth frame using the zero yaw angle
-		euler321(2) = 0.0f;
-		matrix::Dcm<float> R_to_earth(euler321);
 
 		// calculate the observed yaw angle
 		if (_control_status.flags.mag_hdg) {
+			// Set the yaw angle to zero and rotate the measurements into earth frame using the zero yaw angle
+			euler321(2) = 0.0f;
+			Dcmf R_to_earth(euler321);
+
 			// rotate the magnetometer measurements into earth frame using a zero yaw angle
-			mag_earth_pred = R_to_earth * _mag_sample_delayed.mag;
+			if (_control_status.flags.mag_3D) {
+				// don't apply bias corrections if we are learning them
+				mag_earth_pred = R_to_earth * _mag_sample_delayed.mag;
+
+			} else {
+				mag_earth_pred = R_to_earth * (_mag_sample_delayed.mag - _state.mag_B);
+			}
+
 			// the angle of the projection onto the horizontal gives the yaw angle
 			measured_hdg = -atan2f(mag_earth_pred(1), mag_earth_pred(0)) + _mag_declination;
+
 		} else if (_control_status.flags.ev_yaw) {
-			// convert the observed quaternion to a rotation matrix
-			matrix::Dcm<float> R_to_earth_ev(_ev_sample_delayed.quat);	// transformation matrix from body to world frame
-			// calculate the yaw angle for a 312 sequence
-			measured_hdg = atan2f(R_to_earth_ev(1, 0) , R_to_earth_ev(0, 0));
+			// calculate the yaw angle for a 321 sequence
+			// Expressions obtained from yaw_input_321.c produced by https://github.com/PX4/ecl/blob/master/matlab/scripts/Inertial%20Nav%20EKF/quat2yaw321.m
+			float Tbn_1_0 = 2.0f*(_ev_sample_delayed.quat(0)*_ev_sample_delayed.quat(3)+_ev_sample_delayed.quat(1)*_ev_sample_delayed.quat(2));
+			float Tbn_0_0 = sq(_ev_sample_delayed.quat(0))+sq(_ev_sample_delayed.quat(1))-sq(_ev_sample_delayed.quat(2))-sq(_ev_sample_delayed.quat(3));
+			measured_hdg = atan2f(Tbn_1_0,Tbn_0_0);
+
 		} else {
 			// there is no yaw observation
 			return;
@@ -470,6 +523,7 @@ void Ekf::fuseHeading()
 		float t12 = t8*t11*4.0f;
 		float t13 = t12+1.0f;
 		float t14;
+
 		if (fabsf(t13) > 1e-6f) {
 			t14 = 1.0f/t13;
 		} else {
@@ -481,51 +535,66 @@ void Ekf::fuseHeading()
 		H_YAW[2] = t8*t14*(-q1*t3+q1*t4+q1*t5+q1*t6-q0*q2*q3*2.0f)*2.0f;
 		H_YAW[3] = t8*t14*(q0*t3-q0*t4+q0*t5+q0*t6-q1*q2*q3*2.0f)*2.0f;
 
-		// Calculate the 312 sequence euler angles that rotate from earth to body frame
-		// See http://www.atacolorado.com/eulersequences.doc
-		Vector3f euler312;
-		euler312(0) = atan2f(-_R_to_earth(0, 1) , _R_to_earth(1, 1)); // first rotation (yaw)
-		euler312(1) = asinf(_R_to_earth(2, 1)); // second rotation (roll)
-		euler312(2) = atan2f(-_R_to_earth(2, 0) , _R_to_earth(2, 2)); // third rotation (pitch)
+		/* Calculate the 312 sequence euler angles that rotate from earth to body frame
+		 * Derived from https://github.com/PX4/ecl/blob/master/matlab/scripts/Inertial%20Nav%20EKF/quat2yaw312.m
+		 * Body to nav frame transformation using a yaw-roll-pitch rotation sequence is given by:
+		 *
+		[ cos(pitch)*cos(yaw) - sin(pitch)*sin(roll)*sin(yaw), -cos(roll)*sin(yaw), cos(yaw)*sin(pitch) + cos(pitch)*sin(roll)*sin(yaw)]
+		[ cos(pitch)*sin(yaw) + cos(yaw)*sin(pitch)*sin(roll),  cos(roll)*cos(yaw), sin(pitch)*sin(yaw) - cos(pitch)*cos(yaw)*sin(roll)]
+		[                               -cos(roll)*sin(pitch),           sin(roll),                                cos(pitch)*cos(roll)]
+		*/
+		float yaw = atan2f(-_R_to_earth(0, 1), _R_to_earth(1, 1)); // first rotation (yaw)
+		float roll = asinf(_R_to_earth(2, 1)); // second rotation (roll)
+		float pitch = atan2f(-_R_to_earth(2, 0), _R_to_earth(2, 2)); // third rotation (pitch)
 
-		predicted_hdg = euler312(0); // we will need the predicted heading to calculate the innovation
-
-		// Set the first rotation (yaw) to zero and rotate the measurements into earth frame
-		euler312(0) = 0.0f;
-
-		// Calculate the body to earth frame rotation matrix from the euler angles using a 312 rotation sequence
-		float c2 = cosf(euler312(2));
-		float s2 = sinf(euler312(2));
-		float s1 = sinf(euler312(1));
-		float c1 = cosf(euler312(1));
-		float s0 = sinf(euler312(0));
-		float c0 = cosf(euler312(0));
-
-		matrix::Dcm<float> R_to_earth;
-		R_to_earth(0, 0) = c0 * c2 - s0 * s1 * s2;
-		R_to_earth(1, 1) = c0 * c1;
-		R_to_earth(2, 2) = c2 * c1;
-		R_to_earth(0, 1) = -c1 * s0;
-		R_to_earth(0, 2) = s2 * c0 + c2 * s1 * s0;
-		R_to_earth(1, 0) = c2 * s0 + s2 * s1 * c0;
-		R_to_earth(1, 2) = s0 * s2 - s1 * c0 * c2;
-		R_to_earth(2, 0) = -s2 * c1;
-		R_to_earth(2, 1) = s1;
+		predicted_hdg = yaw; // we will need the predicted heading to calculate the innovation
 
 		// calculate the observed yaw angle
 		if (_control_status.flags.mag_hdg) {
+			// Set the first rotation (yaw) to zero and rotate the measurements into earth frame
+			yaw = 0.0f;
+
+			// Calculate the body to earth frame rotation matrix from the euler angles using a 312 rotation sequence
+			// Equations from Tbn_312.c produced by https://github.com/PX4/ecl/blob/master/matlab/scripts/Inertial%20Nav%20EKF/quat2yaw312.m
+			Dcmf R_to_earth;
+			float sy = sinf(yaw);
+			float cy = cosf(yaw);
+			float sp = sinf(pitch);
+			float cp = cosf(pitch);
+			float sr = sinf(roll);
+			float cr = cosf(roll);
+			R_to_earth(0,0) = cy*cp-sy*sp*sr;
+			R_to_earth(0,1) = -sy*cr;
+			R_to_earth(0,2) = cy*sp+sy*cp*sr;
+			R_to_earth(1,0) = sy*cp+cy*sp*sr;
+			R_to_earth(1,1) = cy*cr;
+			R_to_earth(1,2) = sy*sp-cy*cp*sr;
+			R_to_earth(2,0) = -sp*cr;
+			R_to_earth(2,1) = sr;
+			R_to_earth(2,2) = cp*cr;
+
 			// rotate the magnetometer measurements into earth frame using a zero yaw angle
-			mag_earth_pred = R_to_earth * _mag_sample_delayed.mag;
+			if (_control_status.flags.mag_3D) {
+				// don't apply bias corrections if we are learning them
+				mag_earth_pred = R_to_earth * _mag_sample_delayed.mag;
+			} else {
+				mag_earth_pred = R_to_earth * (_mag_sample_delayed.mag - _state.mag_B);
+			}
+
 			// the angle of the projection onto the horizontal gives the yaw angle
 			measured_hdg = -atan2f(mag_earth_pred(1), mag_earth_pred(0)) + _mag_declination;
+
 		} else if (_control_status.flags.ev_yaw) {
-			// convert the observed quaternion to a rotation matrix
-			matrix::Dcm<float> R_to_earth_ev(_ev_sample_delayed.quat);	// transformation matrix from body to world frame
 			// calculate the yaw angle for a 312 sequence
-			measured_hdg = atan2f(-R_to_earth_ev(0, 1) , R_to_earth_ev(1, 1));
+			// Values from yaw_input_312.c file produced by https://github.com/PX4/ecl/blob/master/matlab/scripts/Inertial%20Nav%20EKF/quat2yaw312.m
+			float Tbn_0_1_neg = 2.0f*(_ev_sample_delayed.quat(0)*_ev_sample_delayed.quat(3)-_ev_sample_delayed.quat(1)*_ev_sample_delayed.quat(2));
+			float Tbn_1_1 = sq(_ev_sample_delayed.quat(0))-sq(_ev_sample_delayed.quat(1))+sq(_ev_sample_delayed.quat(2))-sq(_ev_sample_delayed.quat(3));
+			measured_hdg = atan2f(Tbn_0_1_neg,Tbn_1_1);
+
 		} else {
 			// there is no yaw observation
 			return;
+
 		}
 	}
 
@@ -533,18 +602,55 @@ void Ekf::fuseHeading()
 	if (_control_status.flags.mag_hdg) {
 		// using magnetic heading tuning parameter
 		R_YAW = sq(fmaxf(_params.mag_heading_noise, 1.0e-2f));
+
 	} else if (_control_status.flags.ev_yaw) {
 		// using error estimate from external vision data
 		R_YAW = sq(fmaxf(_ev_sample_delayed.angErr, 1.0e-2f));
+
 	} else {
 		// there is no yaw observation
 		return;
 	}
 
+	// wrap the heading to the interval between +-pi
+	measured_hdg = wrap_pi(measured_hdg);
+
+	// calculate the innovation and define the innovaton gate
+	float innov_gate = math::max(_params.heading_innov_gate, 1.0f);
+	if (_mag_use_inhibit) {
+		// The magnetomer cannot be trusted but we need to fuse a heading to prevent a badly
+		// conditoned covariance matrix developing over time.
+		if (!_vehicle_at_rest) {
+			// Vehicle is not at rest so fuse a zero innovation and record the
+			// predicted heading to use as an observation when movement ceases.
+			_heading_innov = 0.0f;
+			_vehicle_at_rest_prev = false;
+		} else {
+			// Vehicle is at rest so use the last moving prediciton as an observation
+			// to prevent the heading from drifting and to enable yaw gyro bias learning
+			// before takeoff.
+			if (!_vehicle_at_rest_prev || !_mag_use_inhibit_prev) {
+				_last_static_yaw = predicted_hdg;
+				_vehicle_at_rest_prev = true;
+			}
+			_heading_innov = predicted_hdg - _last_static_yaw;
+			R_YAW = 0.01f;
+			innov_gate = 5.0f;
+		}
+	} else {
+		_heading_innov = predicted_hdg - measured_hdg;
+		_last_static_yaw = predicted_hdg;
+	}
+	_mag_use_inhibit_prev = _mag_use_inhibit;
+
+	// wrap the innovation to the interval between +-pi
+	_heading_innov = wrap_pi(_heading_innov);
+
 	// Calculate innovation variance and Kalman gains, taking advantage of the fact that only the first 3 elements in H are non zero
 	// calculate the innovaton variance
 	float PH[4];
 	_heading_innov_var = R_YAW;
+
 	for (unsigned row = 0; row <= 3; row++) {
 		PH[row] = 0.0f;
 
@@ -599,17 +705,8 @@ void Ekf::fuseHeading()
 		}
 	}
 
-	// wrap the heading to the interval between +-pi
-	measured_hdg = matrix::wrap_pi(measured_hdg);
-
-	// calculate the innovation
-	_heading_innov = predicted_hdg - measured_hdg;
-
-	// wrap the innovation to the interval between +-pi
-	_heading_innov = matrix::wrap_pi(_heading_innov);
-
 	// innovation test ratio
-	_yaw_test_ratio = sq(_heading_innov) / (sq(math::max(_params.heading_innov_gate, 1.0f)) * _heading_innov_var);
+	_yaw_test_ratio = sq(_heading_innov) / (sq(innov_gate) * _heading_innov_var);
 
 	// we are no longer using 3-axis fusion so set the reported test levels to zero
 	memset(_mag_test_ratio, 0, sizeof(_mag_test_ratio));
@@ -626,7 +723,7 @@ void Ekf::fuseHeading()
 
 		} else {
 			// constrain the innovation to the maximum set by the gate
-			float gate_limit = sqrtf((sq(math::max(_params.heading_innov_gate, 1.0f)) * _heading_innov_var));
+			float gate_limit = sqrtf((sq(innov_gate) * _heading_innov_var));
 			_heading_innov = math::constrain(_heading_innov, -gate_limit, gate_limit);
 		}
 
@@ -637,18 +734,21 @@ void Ekf::fuseHeading()
 	// apply covariance correction via P_new = (I -K*H)*P
 	// first calculate expression for KHP
 	// then calculate P - KHP
-	for (unsigned row = 0; row < _k_num_states; row++) {
-		for (unsigned column = 0; column <= 3; column++) {
-			KH[row][column] = Kfusion[row] * H_YAW[column];
-		}
-	}
+	float KHP[_k_num_states][_k_num_states];
+	float KH[4];
 
 	for (unsigned row = 0; row < _k_num_states; row++) {
+
+		KH[0] = Kfusion[row] * H_YAW[0];
+		KH[1] = Kfusion[row] * H_YAW[1];
+		KH[2] = Kfusion[row] * H_YAW[2];
+		KH[3] = Kfusion[row] * H_YAW[3];
+
 		for (unsigned column = 0; column < _k_num_states; column++) {
-			float tmp = KH[row][0] * P[0][column];
-			tmp += KH[row][1] * P[1][column];
-			tmp += KH[row][2] * P[2][column];
-			tmp += KH[row][3] * P[3][column];
+			float tmp = KH[0] * P[0][column];
+			tmp += KH[1] * P[1][column];
+			tmp += KH[2] * P[2][column];
+			tmp += KH[3] * P[3][column];
 			KHP[row][column] = tmp;
 		}
 	}
@@ -657,11 +757,12 @@ void Ekf::fuseHeading()
 	// the covariance marix is unhealthy and must be corrected
 	bool healthy = true;
 	_fault_status.flags.bad_mag_hdg = false;
+
 	for (int i = 0; i < _k_num_states; i++) {
 		if (P[i][i] < KHP[i][i]) {
 			// zero rows and columns
-			zeroRows(P,i,i);
-			zeroCols(P,i,i);
+			zeroRows(P, i, i);
+			zeroCols(P, i, i);
 
 			//flag as unhealthy
 			healthy = false;
@@ -766,23 +867,23 @@ void Ekf::fuseDeclination()
 	Kfusion[23] = -t4*t13*(P[23][16]*magE-P[23][17]*magN);
 
 	// calculate innovation and constrain
-	float innovation = atan2f(magE , magN) - _mag_declination;
+	float innovation = atan2f(magE, magN) - _mag_declination;
 	innovation = math::constrain(innovation, -0.5f, 0.5f);
 
 	// apply covariance correction via P_new = (I -K*H)*P
 	// first calculate expression for KHP
 	// then calculate P - KHP
 	// take advantage of the empty columns in KH to reduce the number of operations
+	float KHP[_k_num_states][_k_num_states];
+	float KH[2];
 	for (unsigned row = 0; row < _k_num_states; row++) {
-		for (unsigned column = 16; column <= 17; column++) {
-			KH[row][column] = Kfusion[row] * H_DECL[column];
-		}
-	}
 
-	for (unsigned row = 0; row < _k_num_states; row++) {
+		KH[0] = Kfusion[row] * H_DECL[16];
+		KH[1] = Kfusion[row] * H_DECL[17];
+
 		for (unsigned column = 0; column < _k_num_states; column++) {
-			float tmp = KH[row][16] * P[16][column];
-			tmp += KH[row][17] * P[17][column];
+			float tmp = KH[0] * P[16][column];
+			tmp += KH[1] * P[17][column];
 			KHP[row][column] = tmp;
 		}
 	}
@@ -794,8 +895,8 @@ void Ekf::fuseDeclination()
 	for (int i = 0; i < _k_num_states; i++) {
 		if (P[i][i] < KHP[i][i]) {
 			// zero rows and columns
-			zeroRows(P,i,i);
-			zeroCols(P,i,i);
+			zeroRows(P, i, i);
+			zeroCols(P, i, i);
 
 			//flag as unhealthy
 			healthy = false;

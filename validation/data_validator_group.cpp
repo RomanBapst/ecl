@@ -40,31 +40,59 @@
  */
 
 #include "data_validator_group.h"
-#include <ecl/ecl.h>
+#include <ecl.h>
+#include <cfloat>
 
-DataValidatorGroup::DataValidatorGroup(unsigned siblings) :
-	_first(nullptr),
-	_curr_best(-1),
-	_prev_best(-1),
-	_first_failover_time(0),
-	_toggle_count(0)
+DataValidatorGroup::DataValidatorGroup(unsigned siblings)
 {
-	DataValidator *next = _first;
+	DataValidator *next = nullptr;
+	DataValidator *prev = nullptr;
 
 	for (unsigned i = 0; i < siblings; i++) {
-		next = new DataValidator(next);
+		next = new DataValidator();
+
+		if (i == 0) {
+			_first = next;
+
+		} else {
+			prev->setSibling(next);
+		}
+
+		prev = next;
 	}
 
-	_first = next;
+	_last = next;
+
+	if (_first) {
+		_timeout_interval_us = _first->get_timeout();
+	}
 }
 
 DataValidatorGroup::~DataValidatorGroup()
 {
+	while (_first) {
+		DataValidator *next = _first->sibling();
+		delete (_first);
+		_first = next;
+	}
+}
 
+DataValidator *DataValidatorGroup::add_new_validator()
+{
+	DataValidator *validator = new DataValidator();
+
+	if (!validator) {
+		return nullptr;
+	}
+
+	_last->setSibling(validator);
+	_last = validator;
+	_last->set_timeout(_timeout_interval_us);
+	return _last;
 }
 
 void
-DataValidatorGroup::set_timeout(uint64_t timeout_interval_us)
+DataValidatorGroup::set_timeout(uint32_t timeout_interval_us)
 {
 	DataValidator *next = _first;
 
@@ -72,10 +100,24 @@ DataValidatorGroup::set_timeout(uint64_t timeout_interval_us)
 		next->set_timeout(timeout_interval_us);
 		next = next->sibling();
 	}
+
+	_timeout_interval_us = timeout_interval_us;
 }
 
 void
-DataValidatorGroup::put(unsigned index, uint64_t timestamp, float val[3], uint64_t error_count, int priority)
+DataValidatorGroup::set_equal_value_threshold(uint32_t threshold)
+{
+	DataValidator *next = _first;
+
+	while (next != nullptr) {
+		next->set_equal_value_threshold(threshold);
+		next = next->sibling();
+	}
+}
+
+
+void
+DataValidatorGroup::put(unsigned index, uint64_t timestamp, const float val[3], uint64_t error_count, int priority)
 {
 	DataValidator *next = _first;
 	unsigned i = 0;
@@ -85,12 +127,13 @@ DataValidatorGroup::put(unsigned index, uint64_t timestamp, float val[3], uint64
 			next->put(timestamp, val, error_count, priority);
 			break;
 		}
+
 		next = next->sibling();
 		i++;
 	}
 }
 
-float*
+float *
 DataValidatorGroup::get_best(uint64_t timestamp, int *index)
 {
 	DataValidator *next = _first;
@@ -104,12 +147,12 @@ DataValidatorGroup::get_best(uint64_t timestamp, int *index)
 	int max_index = -1;
 	DataValidator *best = nullptr;
 
-	unsigned i = 0;
+	int i = 0;
 
 	while (next != nullptr) {
 		float confidence = next->confidence(timestamp);
 
-		if (static_cast<int>(i) == pre_check_best) {
+		if (i == pre_check_best) {
 			pre_check_prio = next->priority();
 			pre_check_confidence = confidence;
 		}
@@ -119,10 +162,11 @@ DataValidatorGroup::get_best(uint64_t timestamp, int *index)
 		 * 1) the confidence is higher and priority is equal or higher
 		 * 2) the confidence is no less than 1% different and the priority is higher
 		 */
-		if (((max_confidence < MIN_REGULAR_CONFIDENCE) && (confidence >= MIN_REGULAR_CONFIDENCE)) ||
-			(confidence > max_confidence && (next->priority() >= max_priority)) ||
-			(fabsf(confidence - max_confidence) < 0.01f && (next->priority() > max_priority))
-			) {
+		if ((((max_confidence < MIN_REGULAR_CONFIDENCE) && (confidence >= MIN_REGULAR_CONFIDENCE)) ||
+		     (confidence > max_confidence && (next->priority() >= max_priority)) ||
+		     (fabsf(confidence - max_confidence) < 0.01f && (next->priority() > max_priority))
+		    ) && (confidence > 0.0f)) {
+
 			max_index = i;
 			max_confidence = confidence;
 			max_priority = next->priority();
@@ -133,23 +177,29 @@ DataValidatorGroup::get_best(uint64_t timestamp, int *index)
 		i++;
 	}
 
-	/* the current best sensor is not matching the previous best sensor */
-	if (max_index != _curr_best) {
+	/* the current best sensor is not matching the previous best sensor,
+	 * or the only sensor went bad */
+	if (max_index != _curr_best || ((max_confidence < FLT_EPSILON) && (_curr_best >= 0))) {
 
 		bool true_failsafe = true;
 
 		/* check whether the switch was a failsafe or preferring a higher priority sensor */
 		if (pre_check_prio != -1 && pre_check_prio < max_priority &&
-			fabsf(pre_check_confidence - max_confidence) < 0.1f) {
+		    fabsf(pre_check_confidence - max_confidence) < 0.1f) {
+
 			/* this is not a failover */
 			true_failsafe = false;
+
 			/* reset error flags, this is likely a hotplug sensor coming online late */
-			best->reset_state();
+			if (best != nullptr) {
+				best->reset_state();
+			}
 		}
 
 		/* if we're no initialized, initialize the bookkeeping but do not count a failsafe */
 		if (_curr_best < 0) {
 			_prev_best = max_index;
+
 		} else {
 			/* we were initialized before, this is a real failsafe */
 			_prev_best = pre_check_best;
@@ -167,6 +217,7 @@ DataValidatorGroup::get_best(uint64_t timestamp, int *index)
 		/* for all cases we want to keep a record of the best index */
 		_curr_best = max_index;
 	}
+
 	*index = max_index;
 	return (best) ? best->value() : nullptr;
 }
@@ -182,7 +233,7 @@ DataValidatorGroup::get_vibration_factor(uint64_t timestamp)
 	while (next != nullptr) {
 
 		if (next->confidence(timestamp) > 0.5f) {
-			float* rms = next->rms();
+			float *rms = next->rms();
 
 			for (unsigned j = 0; j < 3; j++) {
 				if (rms[j] > vibe) {
@@ -208,7 +259,7 @@ DataValidatorGroup::get_vibration_offset(uint64_t timestamp, int axis)
 	while (next != nullptr) {
 
 		if (next->confidence(timestamp) > 0.5f) {
-			float* vibration_offset = next->vibration_offset();
+			float *vibration_offset = next->vibration_offset();
 
 			if (vibe < 0.0f || vibration_offset[axis] < vibe) {
 				vibe = vibration_offset[axis];
@@ -226,8 +277,8 @@ DataValidatorGroup::print()
 {
 	/* print the group's state */
 	ECL_INFO("validator: best: %d, prev best: %d, failsafe: %s (%u events)",
-		_curr_best, _prev_best, (_toggle_count > 0) ? "YES" : "NO",
-		_toggle_count);
+		 _curr_best, _prev_best, (_toggle_count > 0) ? "YES" : "NO",
+		 _toggle_count);
 
 	DataValidator *next = _first;
 	unsigned i = 0;
@@ -235,26 +286,21 @@ DataValidatorGroup::print()
 	while (next != nullptr) {
 		if (next->used()) {
 			uint32_t flags = next->state();
-			
+
 			ECL_INFO("sensor #%u, prio: %d, state:%s%s%s%s%s%s", i, next->priority(),
-			((flags & DataValidator::ERROR_FLAG_NO_DATA) ? " NO_DATA" : ""),
-			((flags & DataValidator::ERROR_FLAG_STALE_DATA) ? " STALE_DATA" : ""),
-			((flags & DataValidator::ERROR_FLAG_TIMEOUT) ? " DATA_TIMEOUT" : ""),
-			((flags & DataValidator::ERROR_FLAG_HIGH_ERRCOUNT) ? " HIGH_ERRCOUNT" : ""),
-			((flags & DataValidator::ERROR_FLAG_HIGH_ERRDENSITY) ? " HIGH_ERRDENSITY" : ""),
-			((flags == DataValidator::ERROR_FLAG_NO_ERROR) ? " OK" : ""));
-			
+				 ((flags & DataValidator::ERROR_FLAG_NO_DATA) ? " OFF" : ""),
+				 ((flags & DataValidator::ERROR_FLAG_STALE_DATA) ? " STALE" : ""),
+				 ((flags & DataValidator::ERROR_FLAG_TIMEOUT) ? " TOUT" : ""),
+				 ((flags & DataValidator::ERROR_FLAG_HIGH_ERRCOUNT) ? " ECNT" : ""),
+				 ((flags & DataValidator::ERROR_FLAG_HIGH_ERRDENSITY) ? " EDNST" : ""),
+				 ((flags == DataValidator::ERROR_FLAG_NO_ERROR) ? " OK" : ""));
+
 			next->print();
 		}
+
 		next = next->sibling();
 		i++;
 	}
-}
-
-unsigned
-DataValidatorGroup::failover_count()
-{
-	return _toggle_count;
 }
 
 int
@@ -262,29 +308,33 @@ DataValidatorGroup::failover_index()
 {
 	DataValidator *next = _first;
 	unsigned i = 0;
-	
+
 	while (next != nullptr) {
 		if (next->used() && (next->state() != DataValidator::ERROR_FLAG_NO_ERROR) && (i == (unsigned)_prev_best)) {
 			return i;
 		}
+
 		next = next->sibling();
 		i++;
 	}
+
 	return -1;
 }
 
 uint32_t
 DataValidatorGroup::failover_state()
-{	
+{
 	DataValidator *next = _first;
 	unsigned i = 0;
-	
+
 	while (next != nullptr) {
 		if (next->used() && (next->state() != DataValidator::ERROR_FLAG_NO_ERROR) && (i == (unsigned)_prev_best)) {
 			return next->state();
 		}
+
 		next = next->sibling();
 		i++;
 	}
+
 	return DataValidator::ERROR_FLAG_NO_ERROR;
 }
